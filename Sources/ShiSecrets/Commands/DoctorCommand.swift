@@ -129,14 +129,14 @@ public struct DoctorCheckAdhocSigned: DoctorCheck {
 public struct DoctorCheckOrphanedSocket: DoctorCheck {
 
     public let code = "D-07"
-    public let description = "Orphaned ~/.local/share/shikki/run/secrets-brokerd.sock file (no PID owning it)"
+    public let description = "Orphaned \(BrokerSocketPath.humanReadableXDGPath) file (no PID owning it)"
 
     private let probe: BrokerdProbing
     private let socketPath: String
 
     public init(
         probe: BrokerdProbing = LiveBrokerdProbe(),
-        socketPath: String = NSString(string: "~/.local/share/shikki/run/secrets-brokerd.sock").expandingTildeInPath
+        socketPath: String = BrokerSocketPath.resolve()
     ) {
         self.probe = probe
         self.socketPath = socketPath

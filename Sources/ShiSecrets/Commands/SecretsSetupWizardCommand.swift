@@ -250,7 +250,7 @@ public struct SecretsSetupWizardCommand {
         // sufficient for graceful shutdown. Removed `pkill -9 -f`.
         Thread.sleep(forTimeInterval: 1)
         // Remove stale socket.
-        let sockPath = NSString(string: "~/.local/share/shikki/run/secrets-brokerd.sock").expandingTildeInPath
+        let sockPath = BrokerSocketPath.resolve()
         try? FileManager.default.removeItem(atPath: sockPath)
         // Bootstrap canonical.
         let plistPath = NSString(string: "~/Library/LaunchAgents/io.shikki.secrets-brokerd.plist").expandingTildeInPath
@@ -267,7 +267,7 @@ public struct SecretsSetupWizardCommand {
     }
 
     func waitForSocket() -> Result<Int, WizardError> {
-        let sockPath = NSString(string: "~/.local/share/shikki/run/secrets-brokerd.sock").expandingTildeInPath
+        let sockPath = BrokerSocketPath.resolve()
         let start = nowProvider()
         for i in 1 ... socketWaitSeconds {
             if socketProbe(sockPath) {
@@ -421,7 +421,7 @@ public struct LiveSmokeRunner: SmokeRunning {
             return .failure(.smokeSetFailed(message: "URI parse failed: \(error)"))
         }
 
-        let sockPath = NSString(string: "~/.local/share/shikki/run/secrets-brokerd.sock").expandingTildeInPath
+        let sockPath = BrokerSocketPath.resolve()
         let client = ShiSecretsAPIClient(socket: sockPath)
 
         // set (BR-COMPOSE: direct in-process call — same code path as SecretsSetCommand)

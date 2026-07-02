@@ -102,15 +102,9 @@ struct BrokerMain {
             prodVaultClient = prodVault
             // Resolution order (production):
             //   1. --socket <path> CLI arg (passed by LaunchAgent plist — honors XDG install path)
-            //   2. SHIKKI_BROKER_SOCKET env var (operator override)
-            //   3. XDG default ~/.local/share/shikki/run/secrets-brokerd.sock (aligned with
-            //      the client-library SocketConnection.defaultSocketPath, backlog 209d7d6c)
-            // The plist always passes --socket with the ShikkiPaths.dataRoot()-derived path,
-            // so production daemons installed via `shi secrets brokerd install` land on the
-            // correct XDG socket path without needing an env var override.
-            resolvedSocketPath = devArgs.socketPath
-                ?? ProcessInfo.processInfo.environment["SHIKKI_BROKER_SOCKET"]
-                ?? (NSHomeDirectory() + "/.local/share/shikki/run/secrets-brokerd.sock")
+            //   2. BrokerSocketPath.resolve() — env override + XDG default, shared with
+            //      the client library (single source of truth per policy_dry_single_source_of_truth).
+            resolvedSocketPath = devArgs.socketPath ?? BrokerSocketPath.resolve()
         }
         _ = prodVaultClient  // suppress unused warning when dev-mode
 

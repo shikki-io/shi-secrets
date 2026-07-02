@@ -22,10 +22,11 @@ public struct SocketConnection: Sendable {
 
     /// Default broker socket path. Operator-scoped path; production
     /// daemon-managed path is `/run/shikki-secrets.sock` per BR-D-02.
-    public static let defaultSocketPath: String = {
-        ProcessInfo.processInfo.environment["SHIKKI_BROKER_SOCKET"]
-            ?? NSHomeDirectory() + "/.local/share/shikki/run/secrets-brokerd.sock" // resolver-exempt: ShiSecretsClient library cannot import ShiKit (lower-layer dep)
-    }()
+    ///
+    /// Single source of truth: `BrokerSocketPath.resolve()` in ShiSecretsKit.
+    /// Every other consumer (daemon, CLI verbs, doctor, wizard) references
+    /// that same helper — see policy `dry_single_source_of_truth`.
+    public static let defaultSocketPath: String = BrokerSocketPath.resolve()
 
     public let socketPath: String
 

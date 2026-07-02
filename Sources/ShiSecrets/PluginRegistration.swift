@@ -7,6 +7,7 @@
 // §3.5 of features/shi-secrets-uri-scheme-and-plugin-extraction-2026-05-31.md.
 
 import Foundation
+import ShiSecretsKit
 import ShikkiPluginAPI
 
 /// ShiSecretsPlugin — registers `shi secrets` verb and its 11 sub-verbs with shikki-cli.
@@ -34,7 +35,7 @@ public struct ShiSecretsPlugin: PluginCLISurface {
     /// Dispatch entry-point called by shikki-cli for `shi secrets <subVerb> [args...]`.
     public static func execute(subVerb: String, args: [String]) async throws -> Int32 {
         let socketPath = ProcessInfo.processInfo.environment["SHIKKI_BROKER_SOCKET"]
-            ?? "\(NSHomeDirectory())/.local/share/shikki/run/secrets-brokerd.sock"
+            ?? BrokerSocketPath.resolve()
 
         switch subVerb {
         case "list":

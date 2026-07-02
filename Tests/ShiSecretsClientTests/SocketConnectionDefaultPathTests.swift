@@ -13,6 +13,7 @@
 import Foundation
 import Testing
 @testable import ShiSecretsClient
+import ShiSecretsKit
 
 @Suite("SocketConnection default path — XDG alignment (P0)")
 struct SocketConnectionDefaultPathTests {
@@ -27,9 +28,9 @@ struct SocketConnectionDefaultPathTests {
         // process, so we recompute the fallback the same way the default
         // does — matching the code contract:
         //   ENV_OVERRIDE ?? "$HOME/.local/share/shikki/run/secrets-brokerd.sock"
-        let envOverride = ProcessInfo.processInfo.environment["SHIKKI_BROKER_SOCKET"]
-        let expectedFallback = NSHomeDirectory() + "/.local/share/shikki/run/secrets-brokerd.sock"
-        let expected = envOverride ?? expectedFallback
+        // Reference the same canonical resolver the code-under-test uses —
+        // no re-hardcoding the string here (policy_dry_single_source_of_truth).
+        let expected = BrokerSocketPath.resolve()
 
         #expect(
             SocketConnection.defaultSocketPath == expected,
@@ -59,7 +60,7 @@ struct SocketConnectionDefaultPathTests {
             )
         } else {
             #expect(
-                SocketConnection.defaultSocketPath.hasSuffix("/.local/share/shikki/run/secrets-brokerd.sock"),
+                SocketConnection.defaultSocketPath.hasSuffix(BrokerSocketPath.xdgSuffix),
                 "When SHIKKI_BROKER_SOCKET is unset, default must fall through to the XDG path."
             )
         }

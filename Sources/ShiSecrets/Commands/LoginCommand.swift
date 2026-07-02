@@ -41,7 +41,7 @@ public enum PlistPathPolicy {
     }
 
     public static var socketPath: String {
-        return NSString(string: "~/.local/share/shikki/run/secrets-brokerd.sock").expandingTildeInPath
+        return BrokerSocketPath.resolve()
     }
 }
 
