@@ -64,6 +64,28 @@ private struct TokenResponse: Decodable {
     let access_token: String
     let expires_in: Int       // seconds
     let token_type: String
+
+    // ── The fields this struct used to throw away ──────────────────────
+    // The identity endpoint returns the account's protected symmetric key and
+    // its KDF parameters in the SAME response as the token. Decoding only the
+    // token made the vault key invisible, which made client-side encryption
+    // look impossible, which is how plaintext ended up on the server.
+    //
+    // Vaultwarden capitalises them; some builds do not. Both spellings are
+    // accepted because a silent nil here reads exactly like "the server does
+    // not support this".
+    let Key: String?
+    let Kdf: Int?
+    let KdfIterations: Int?
+    let key: String?
+    let kdf: Int?
+    let kdfIterations: Int?
+
+    var protectedKey: String? { Key ?? key }
+    var kdfParameters: VaultKDFParameters? {
+        guard let raw = Kdf ?? kdf, let type = BitwardenCrypto.KDFType(rawValue: raw) else { return nil }
+        return VaultKDFParameters(kdf: type, iterations: KdfIterations ?? kdfIterations ?? 600_000)
+    }
 }
 
 // MARK: - Internal cipher response shape (minimal — only fields W1/W3 need)
@@ -89,6 +111,10 @@ private struct CipherResponse: Decodable {
 private struct CipherCreateRequest: Encodable {
     struct SecureNoteData: Encodable { let type: Int }
     let type: Int              // 2 = SecureNote
+    /// EncString wire form, NOT plaintext. The initialiser takes ciphertext
+    /// only, so there is no path that reaches this struct with a readable
+    /// string — the previous version took `name: String, value: String` and
+    /// assigned them straight through.
     let name: String
     let notes: String
     let secureNote: SecureNoteData
@@ -96,10 +122,10 @@ private struct CipherCreateRequest: Encodable {
     let favorite: Bool
     let reprompt: Int
 
-    init(name: String, value: String) {
+    init(encryptedName: EncString, encryptedValue: EncString) {
         self.type = 2
-        self.name = name
-        self.notes = value
+        self.name = encryptedName.serialized
+        self.notes = encryptedValue.serialized
         self.secureNote = SecureNoteData(type: 0)
         self.folderId = nil
         self.favorite = false
@@ -118,6 +144,42 @@ public actor VaultwardenClient {
     private let credentials: VaultwardenCredentials
     private let session: URLSession
     private let sessionCache: SessionCache
+
+    /// The unwrapped vault key. Separate from `sessionCache` on purpose: that
+    /// one holds the ACCESS TOKEN, which authenticates the call, and this one
+    /// holds the VAULT KEY, which decrypts the data. Treating those as one
+    /// thing is exactly the confusion that produced a plaintext vault.
+    private let vaultKey = VaultSessionKey()
+
+    /// Everything the server told us at token time, kept so `unlock` does not
+    /// have to make a second round trip.
+    private var accountProtectedKey: String?
+    private var accountKDF: VaultKDFParameters?
+
+    /// How many fields came back unencrypted this session. Non-zero means the
+    /// vault still holds items written before the encryption fix.
+    public private(set) var plaintextFieldsSeen: Int = 0
+
+    /// Warn once per process, not once per field — a loop over 40 secrets
+    /// would otherwise bury the message under its own repetition.
+    nonisolated(unsafe) private static var legacyWarningIssued = false
+    static func reportLegacyPlaintext() {
+        guard !legacyWarningIssued else { return }
+        legacyWarningIssued = true
+        FileHandle.standardError.write(Data("""
+            ⚠️  shi-secrets: this vault contains PLAINTEXT items.
+
+                They were written before client-side encryption existed, so they
+                are readable by anyone with access to the server, its backups, or
+                a database dump. They are also invisible to the Bitwarden apps.
+
+                They are being read successfully — do NOT delete them to \"clean
+                up\". Re-encrypt with VaultwardenClient.reEncryptLegacyPlaintext,
+                then rotate every credential involved: it was stored in the clear.
+                See docs/vault-encryption.md.
+
+            """.utf8))
+    }
 
     /// Resolved base URL (config-chain resolution done at init).
     private let baseURL: URL
@@ -266,6 +328,11 @@ public actor VaultwardenClient {
             throw VaultwardenClientError.tokenResponseMalformed
         }
 
+        // Keep the key material that arrived with the token. It is not used
+        // here — unlocking needs the master password — but discarding it is
+        // what made the vault key look unavailable in the first place.
+        captureKeyMaterial(from: tokenResponse)
+
         let expiresAt = Date().addingTimeInterval(TimeInterval(tokenResponse.expires_in))
         return CachedToken(accessToken: tokenResponse.access_token, expiresAt: expiresAt)
     }
@@ -310,8 +377,67 @@ public actor VaultwardenClient {
             throw VaultwardenClientError.tokenResponseMalformed
         }
 
+        captureKeyMaterial(from: tokenResponse)
+
         let expiresAt = Date().addingTimeInterval(TimeInterval(tokenResponse.expires_in))
         await sessionCache.setToken(tokenResponse.access_token, expiresAt: expiresAt)
+    }
+
+    // MARK: - Vault unlock
+
+    private func captureKeyMaterial(from response: TokenResponse) {
+        if let k = response.protectedKey { accountProtectedKey = k }
+        if let p = response.kdfParameters { accountKDF = p }
+    }
+
+    /// Whether the vault key is currently held.
+    /// A token can be valid while this is false — authenticated but locked.
+    public var isVaultUnlocked: Bool {
+        get async { await vaultKey.isUnlocked }
+    }
+
+    /// Derive the vault key from the master password and hold it for the
+    /// session. Typed once by the operator; never stored, never logged.
+    ///
+    /// A wrong password fails as `macMismatch` when the account key is
+    /// unwrapped — the server is not consulted and cannot tell us, because it
+    /// does not know the password either. That is the model working.
+    public func unlock(masterPassword: String, email: String) async throws {
+        // The account key normally rides along with the token. If we have not
+        // done an exchange yet, do one now rather than reporting "locked" for
+        // a vault that would open fine.
+        if accountProtectedKey == nil {
+            _ = try? await performTokenExchange()
+        }
+        guard let protectedKey = accountProtectedKey else {
+            throw VaultUnlockError.accountKeyMissing
+        }
+        let parameters: VaultKDFParameters
+        if let known = accountKDF {
+            parameters = known
+        } else {
+            parameters = try await VaultUnlock.fetchKDFParameters(
+                baseURL: baseURL, email: email, session: session
+            )
+            accountKDF = parameters
+        }
+        let keys = try VaultUnlock.deriveSessionKeys(
+            masterPassword: masterPassword, email: email,
+            parameters: parameters, protectedKey: protectedKey
+        )
+        await vaultKey.unlock(with: keys)
+    }
+
+    /// Install a key derived elsewhere — used by the broker, which unlocks
+    /// once and hands the key to each client it builds, so the operator is
+    /// not prompted per call.
+    public func adoptSessionKeys(_ keys: SymmetricKeyPair) async {
+        await vaultKey.unlock(with: keys)
+    }
+
+    /// Drop the vault key. The access token survives; the data does not open.
+    public func lockVault() async {
+        await vaultKey.lock()
     }
 
     // MARK: - fetchSecret(id:)
@@ -350,17 +476,42 @@ public actor VaultwardenClient {
         // Plaintext stays inside this actor; never serialised.
         var result: [String: String] = [:]
         // W3: SecureNote ciphers store value in `notes`.
-        if let notes = cipher.notes { result["value"] = notes }
+        if let notes = cipher.notes { result["value"] = try await decryptField(notes) }
         if let login = cipher.login {
-            if let u = login.username { result["username"] = u }
-            if let p = login.password { result["password"] = p }
+            if let u = login.username { result["username"] = try await decryptField(u) }
+            if let p = login.password { result["password"] = try await decryptField(p) }
         }
         for field in cipher.fields ?? [] {
             if let name = field.name, let value = field.value {
-                result[name] = value
+                // The field NAME is encrypted too, not just the value.
+                result[try await decryptField(name)] = try await decryptField(value)
             }
         }
         return result
+    }
+
+    /// Decrypt one field, tolerating the legacy plaintext this client wrote.
+    ///
+    /// ── Why the legacy branch exists, and why it is loud ──────────────
+    /// Every item written before the encryption fix holds a bare string. If
+    /// this method simply threw on them, the fix would take the operator's
+    /// only copy of those secrets away at the moment it landed. So plaintext
+    /// is returned — and reported, every single time, because a silent
+    /// tolerance becomes permanent.
+    ///
+    /// The branch is removed once ``VaultwardenClient.reEncryptLegacyPlaintext` reports
+    /// zero plaintext rows. Until then, treat every value that trips it as
+    /// having been stored in the clear and due for rotation.
+    private func decryptField(_ raw: String) async throws -> String {
+        let enc: EncString
+        do {
+            enc = try EncString.parse(raw)
+        } catch EncString.ParseError.notAnEncString {
+            plaintextFieldsSeen += 1
+            VaultwardenClient.reportLegacyPlaintext()
+            return raw
+        }
+        return try BitwardenCrypto.decrypt(enc, using: try await vaultKey.require())
     }
 
     // MARK: - createCipher(name:value:) — W3 write path
@@ -368,14 +519,29 @@ public actor VaultwardenClient {
     /// Create a new SecureNote cipher in the vault.
     /// Returns the cipher ID of the newly created item.
     ///
-    /// Vaultwarden accepts plaintext when accessed via API key
-    /// (client_credentials grant). No client-side encryption needed.
-    /// Decision captured in @db: shikki.secrets.W3-encryption-decision.
+    /// `name` and `value` arrive as plaintext and leave as EncStrings. The
+    /// vault must be unlocked; there is deliberately no fallback that writes
+    /// the plaintext through when it is not.
+    ///
+    /// ── What this replaces ────────────────────────────────────────────
+    /// The previous implementation assigned both straight into the request
+    /// body, above a comment claiming "Vaultwarden accepts plaintext when
+    /// accessed via API key (client_credentials grant). No client-side
+    /// encryption needed."
+    ///
+    /// Vaultwarden does accept it — it accepts ANY bytes, because it is
+    /// zero-knowledge and never looks. The 200 OK was not confirmation. Every
+    /// item written that way is readable by anyone holding the database, and
+    /// is rejected by every real Bitwarden client, which is how it surfaced:
+    /// `[error: cannot decrypt]` on the web, an empty vault in the app.
     @discardableResult
     public func createCipher(name: String, value: String) async throws -> String {
         guard let token = await sessionCache.currentToken() else {
             throw VaultwardenClientError.notAuthenticated
         }
+        let keys = try await vaultKey.require()
+        let encName  = try BitwardenCrypto.encrypt(name,  using: keys)
+        let encValue = try BitwardenCrypto.encrypt(value, using: keys)
 
         let url = baseURL.appendingPathComponent("api/ciphers")
         var request = URLRequest(url: url)
@@ -383,7 +549,7 @@ public actor VaultwardenClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let payload = CipherCreateRequest(name: name, value: value)
+        let payload = CipherCreateRequest(encryptedName: encName, encryptedValue: encValue)
         request.httpBody = try JSONEncoder().encode(payload)
 
         let (data, response) = try await performRequest(request)
@@ -450,7 +616,157 @@ public actor VaultwardenClient {
         guard let list = try? JSONDecoder().decode(ListResponse.self, from: data) else {
             throw VaultwardenClientError.cipherResponseMalformed
         }
-        return list.data.map { ["id": $0.id, "name": $0.name] }
+        // The NAME is an encrypted field too. Returning it raw printed
+        // `2.xTf9…|…|…` in `shi secret list` for every correctly-written item.
+        var out: [[String: String]] = []
+        for item in list.data {
+            out.append(["id": item.id, "name": try await decryptField(item.name)])
+        }
+        return out
+    }
+
+    // MARK: - Encryption audit
+
+    /// What the vault looks like from an encryption standpoint.
+    /// `plaintext` is the number of items an attacker with the database could
+    /// read directly — and the number invisible to every Bitwarden client.
+    public struct EncryptionAudit: Sendable, Equatable {
+        public var total = 0
+        public var encrypted = 0
+        public var plaintext = 0
+        public var plaintextNames: [String] = []
+        public var isClean: Bool { plaintext == 0 }
+    }
+
+    /// Count plaintext items WITHOUT unlocking the vault.
+    ///
+    /// Deliberately key-free: the operator must be able to see the blast
+    /// radius before deciding anything, and "is this string shaped like an
+    /// EncString" needs no key. It also means this runs on a machine that
+    /// cannot decrypt, which is where you most want to check.
+    public func auditEncryption() async throws -> EncryptionAudit {
+        guard let token = await sessionCache.currentToken() else {
+            throw VaultwardenClientError.notAuthenticated
+        }
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/ciphers"))
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await performRequest(request)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            throw VaultwardenClientError.fetchSecretFailed(httpStatus: 0)
+        }
+        struct ListResponse: Decodable {
+            struct Item: Decodable { let id: String; let name: String }
+            let data: [Item]
+        }
+        guard let list = try? JSONDecoder().decode(ListResponse.self, from: data) else {
+            throw VaultwardenClientError.cipherResponseMalformed
+        }
+
+        var audit = EncryptionAudit()
+        for item in list.data {
+            audit.total += 1
+            if EncString.looksEncrypted(item.name) {
+                audit.encrypted += 1
+            } else {
+                audit.plaintext += 1
+                // The NAME is already exposed by definition — printing it
+                // reveals nothing that the server does not already hold in the
+                // clear, and the operator needs it to know what to rotate.
+                audit.plaintextNames.append(item.name)
+            }
+        }
+        return audit
+    }
+
+    // MARK: - Re-encryption of legacy plaintext items
+
+    public struct ReEncryptionReport: Sendable {
+        public var examined = 0
+        public var rewritten = 0
+        public var alreadyEncrypted = 0
+        /// name → the reason it could not be rewritten. Never empty-and-silent:
+        /// a migration that skips items without saying so is worse than one
+        /// that refuses to run.
+        public var failures: [String: String] = [:]
+        public var dryRun = false
+    }
+
+    /// Rewrite every plaintext item as a proper EncString.
+    ///
+    /// `dryRun` (the default) changes nothing and reports exactly what a real
+    /// run would do. Run it first: this touches every secret the operator has.
+    ///
+    /// ── What this does NOT do ────────────────────────────────────────
+    /// It does not rotate anything. Re-encrypting hides the values from
+    /// FUTURE readers of the database; it does nothing about backups already
+    /// taken, dumps already made, or anyone who has already looked. Every
+    /// credential that was stored in the clear must still be rotated at its
+    /// source. The report says so at the end for exactly this reason.
+    public func reEncryptLegacyPlaintext(dryRun: Bool = true) async throws -> ReEncryptionReport {
+        let keys = try await vaultKey.require()
+        guard let token = await sessionCache.currentToken() else {
+            throw VaultwardenClientError.notAuthenticated
+        }
+
+        var report = ReEncryptionReport()
+        report.dryRun = dryRun
+
+        var listRequest = URLRequest(url: baseURL.appendingPathComponent("api/ciphers"))
+        listRequest.httpMethod = "GET"
+        listRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (listData, listResponse) = try await performRequest(listRequest)
+        guard let http = listResponse as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            throw VaultwardenClientError.fetchSecretFailed(httpStatus: 0)
+        }
+        struct ListResponse: Decodable {
+            struct Item: Decodable { let id: String; let name: String; let notes: String? }
+            let data: [Item]
+        }
+        guard let list = try? JSONDecoder().decode(ListResponse.self, from: listData) else {
+            throw VaultwardenClientError.cipherResponseMalformed
+        }
+
+        for item in list.data {
+            report.examined += 1
+            if EncString.looksEncrypted(item.name) {
+                report.alreadyEncrypted += 1
+                continue
+            }
+            if dryRun {
+                report.rewritten += 1
+                continue
+            }
+            do {
+                let encName  = try BitwardenCrypto.encrypt(item.name, using: keys)
+                let encNotes = try BitwardenCrypto.encrypt(item.notes ?? "", using: keys)
+                try await putCipher(id: item.id, name: encName, notes: encNotes, token: token)
+                report.rewritten += 1
+            } catch {
+                report.failures[item.name] = String(describing: error)
+            }
+        }
+        return report
+    }
+
+    private func putCipher(
+        id: String, name: EncString, notes: EncString, token: String
+    ) async throws {
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/ciphers/\(id)"))
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            CipherCreateRequest(encryptedName: name, encryptedValue: notes)
+        )
+
+        let (_, response) = try await performRequest(request)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            throw VaultwardenClientError.createCipherFailed(
+                httpStatus: (response as? HTTPURLResponse)?.statusCode ?? 0
+            )
+        }
     }
 
     // MARK: - Device identifier (static — stable per-machine)
