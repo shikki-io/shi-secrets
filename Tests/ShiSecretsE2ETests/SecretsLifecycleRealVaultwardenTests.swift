@@ -184,18 +184,34 @@ final class MockVaultwardenProtocol: URLProtocol, @unchecked Sendable {
 
 // MARK: - Mock VaultwardenClient factory
 
-private func mockVaultwardenClient() throws -> VaultwardenClient {
+private func mockVaultwardenClient() async throws -> VaultwardenClient {
     let creds = VaultwardenCredentials(
         clientID: "user.mock",
         clientSecret: "mock-secret",
         serverURL: URL(string: "https://mock-vw.test")!
     )
-    return try VaultwardenClient(
+    let client = try VaultwardenClient(
         credentials: creds,
         configYmlVaultServer: "https://mock-vw.test",
         urlProtocolClasses: [MockVaultwardenProtocol.self]
     )
+    // The vault must be UNLOCKED before anything can be written, because the
+    // write path now encrypts. These tests used to pass without this step —
+    // that is precisely the defect: `createCipher` accepted plaintext and the
+    // mock server, like the real one, stored it without complaint.
+    //
+    // Unlocking here means the mock exercises the real encrypt-on-write /
+    // decrypt-on-read path end to end: whatever the mock server holds is
+    // ciphertext, and `get` only returns the original if both halves work.
+    await client.adoptSessionKeys(mockSessionKeys)
+    return client
 }
+
+/// A fixed key pair for the mock. Deterministic so a failure is reproducible;
+/// it protects nothing, because the mock server lives in this process.
+private let mockSessionKeys = try! SymmetricKeyPair(
+    userKey: Data(repeating: 0xA5, count: 32) + Data(repeating: 0x5A, count: 32)
+)
 
 // MARK: - TP-LC-R01..04 (mock server)
 
@@ -206,7 +222,7 @@ struct SecretsLifecycleRealVaultwardenTests {
     @Test("TP-LC-R01: set → get → list → delete → list(absent) — mock Vaultwarden")
     func test_lcr01_fullLifecycle_mockVaultwarden() async throws {
         MockVaultwardenProtocol.reset()
-        let vc = try mockVaultwardenClient()
+        let vc = try await mockVaultwardenClient()
         try await vc.connect()
 
         let bw = ProductionBWClient()
@@ -217,6 +233,30 @@ struct SecretsLifecycleRealVaultwardenTests {
 
         // 1. set
         try await bw.set(name: key, value: value)
+
+        // 1b. WHAT THE SERVER ACTUALLY HOLDS.
+        //
+        // The whole original defect passes every assertion in this test except
+        // this one: set/get/list/delete are all self-consistent when the client
+        // writes plaintext and reads plaintext back. Only by looking at the
+        // server's own copy does the bug become visible.
+        //
+        // The mock stores exactly the bytes it was sent, like the real
+        // Vaultwarden — which never inspects a cipher and so never objected.
+        let stored = MockVaultwardenProtocol.ciphers.values.first
+        #expect(stored != nil, "the mock server should hold the item we just wrote")
+        if let stored {
+            #expect(stored.name != key,
+                    "the item NAME reached the server in plaintext")
+            #expect(stored.notes != value,
+                    "the SECRET reached the server in plaintext")
+            #expect(EncString.looksEncrypted(stored.name),
+                    "name is not a well-formed EncString: \(stored.name.prefix(24))")
+            #expect(EncString.looksEncrypted(stored.notes),
+                    "notes is not a well-formed EncString: \(stored.notes.prefix(24))")
+            #expect(!stored.notes.contains(value),
+                    "the plaintext secret appears inside the stored ciphertext")
+        }
 
         // 2. get — returns ["value": value] via SecureNote notes field
         let got = try await bw.get(name: key)
@@ -238,7 +278,7 @@ struct SecretsLifecycleRealVaultwardenTests {
     @Test("TP-LC-R02: set twice — list does not duplicate; get returns latest value")
     func test_lcr02_setIsIdempotent_noduplicates() async throws {
         MockVaultwardenProtocol.reset()
-        let vc = try mockVaultwardenClient()
+        let vc = try await mockVaultwardenClient()
         try await vc.connect()
         let bw = ProductionBWClient()
         await bw.wire(client: vc)
@@ -263,7 +303,7 @@ struct SecretsLifecycleRealVaultwardenTests {
     @Test("TP-LC-R03: delete non-existent key — no error")
     func test_lcr03_deleteNonexistent_noOp() async throws {
         MockVaultwardenProtocol.reset()
-        let vc = try mockVaultwardenClient()
+        let vc = try await mockVaultwardenClient()
         try await vc.connect()
         let bw = ProductionBWClient()
         await bw.wire(client: vc)
@@ -276,7 +316,7 @@ struct SecretsLifecycleRealVaultwardenTests {
     @Test("TP-LC-R04: set two keys, delete both — list is empty")
     func test_lcr04_listEmptyAfterAllDeleted() async throws {
         MockVaultwardenProtocol.reset()
-        let vc = try mockVaultwardenClient()
+        let vc = try await mockVaultwardenClient()
         try await vc.connect()
         let bw = ProductionBWClient()
         await bw.wire(client: vc)
