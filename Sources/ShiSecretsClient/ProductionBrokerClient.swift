@@ -114,6 +114,27 @@ public actor ProductionBrokerClient: BrokerClient {
         return try items.map { try decodeResult($0, as: SeamsWriter.Row.self) }
     }
 
+    // MARK: - vault.* (feat/vault-unlock-2026-11-01)
+
+    /// Send vault.unlock to the broker. The master password travels over the
+    /// 0600 Unix socket — local process-to-process only, never over the network.
+    public func vaultUnlock(masterPassword: String, email: String) async throws {
+        let params: JSONValue = .object([
+            "masterPassword": .string(masterPassword),
+            "email": .string(email),
+        ])
+        _ = try await call(method: "vault.unlock", params: params)
+    }
+
+    /// Query locked/unlocked state from the broker (vault.status).
+    public func vaultStatus() async throws -> VaultStatus {
+        let result = try await call(method: "vault.status", params: .object([:]))
+        guard case let .object(obj) = result, case let .bool(locked) = obj["locked"] else {
+            throw BrokerClientError.wireDecodeFailed("vault.status expected {locked: Bool}")
+        }
+        return VaultStatus(locked: locked)
+    }
+
     // MARK: - Internals
 
     private func call(method: String, params: JSONValue) async throws -> JSONValue {
