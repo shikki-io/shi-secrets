@@ -115,7 +115,11 @@ final class FakeVaultwardenServer: @unchecked Sendable {
     func start() async throws {
         let ephemeralPort = try Self.reserveEphemeralPort()
 
-        let app = try await Application.make(.testing)
+        var env = Environment.testing
+        // Prevent ConsoleKit from reading the Swift Testing harness arguments
+        // (e.g. --test-bundle-path) as unknown Vapor commands.
+        env.arguments = ["vapor", "serve"]
+        let app = try await Application.make(env)
         app.http.server.configuration.hostname = "127.0.0.1"
         app.http.server.configuration.port = ephemeralPort
 
@@ -135,14 +139,20 @@ final class FakeVaultwardenServer: @unchecked Sendable {
     }
 
     /// Stop the server. Synchronous so it can be called from a defer block.
-    /// Calls app.shutdown() (Vapor's sync lifecycle API) which runs
-    /// lifecycle.shutdown() + lifecycle.wait(), stopping the ServeCommand and
-    /// satisfying Vapor's deinit assertion. Using a detached Task + semaphore
-    /// deadlocks the Swift cooperative thread pool; the sync path avoids that.
+    ///
+    /// Calling app.shutdown() (sync) from a cooperative pool thread deadlocks:
+    /// lifecycle.wait() blocks while NIO's event loops need the same pool.
+    /// Using Task.detached + DispatchSemaphore also deadlocks if all pool threads
+    /// are occupied.
+    ///
+    /// Correct approach: call app.running?.stop(), which fires the closure
+    /// registered by ServeCommand.run() that sets ServeCommand.running = false
+    /// — this is the only flag the deinit assertion checks. The Application and
+    /// its NIO event loop group are then released via ARC when vaporApp is nil.
     func stop() {
         guard let app = vaporApp else { return }
         vaporApp = nil
-        app.shutdown()
+        app.running?.stop()   // sets ServeCommand.running = false → satisfies deinit assert
     }
 
     // MARK: - Port allocation
