@@ -153,6 +153,7 @@ let package = Package(
             dependencies: [
                 "ShiSecretsBrokerd",
                 "ShiSecretsCLI",
+                "ShiSecretsClient",
                 "ShiSecretsDrivers",
                 "ShiSecretsKit",
             ]
