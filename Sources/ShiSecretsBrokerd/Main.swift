@@ -133,6 +133,26 @@ struct BrokerMain {
                 log("shikki-secrets-brokerd: dev-mode refused — \(error)")
                 throw error
             }
+        } else if devArgs.dryRun {
+            // E2E dry-run: ProductionBWClient → loopback VaultwardenClient.
+            // Used exclusively in process-level tests. Token exchange deferred
+            // to vault.unlock — this is intentional to prove the v0.8.0
+            // session-seeding regression at the process level.
+            let drySocket = devArgs.socketPath
+                ?? ProcessInfo.processInfo.environment["SHIKKI_BROKER_SOCKET"]
+                ?? "/tmp/shi-secrets-dryrun-\(getuid()).sock"
+            let dryBootstrap = DryRunBootstrap()
+            do {
+                let (bw, sk) = try await dryBootstrap.unseal()
+                bwClient = bw
+                signingKey = sk
+                prodVaultClient = nil
+                resolvedSocketPath = drySocket
+                log("shikki-secrets-brokerd: --dry-run E2E mode ACTIVE — socket=\(drySocket)")
+            } catch {
+                log("shikki-secrets-brokerd: dry-run refused — \(error)")
+                throw error
+            }
         } else {
             // Production path — vaultwarden contact, hardened keychain.
             let bootstrap = Bootstrap()
@@ -298,7 +318,7 @@ struct BrokerMain {
             minter: minter,
             bootstrap: bootstrap,
             manifestSource: nil,   // standalone: no pre-signed manifest
-            devMode: devArgs.enabled
+            devMode: devArgs.enabled || devArgs.dryRun
         )
 
         // ── 3. start() — preflight: socket bind + kernel job registration ─

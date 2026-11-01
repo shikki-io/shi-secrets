@@ -213,7 +213,8 @@ public actor VaultwardenClient {
         credentials: VaultwardenCredentials,
         pinnedSHA256: String? = nil,
         configYmlVaultServer: String? = nil,
-        urlProtocolClasses: [AnyClass]? = nil
+        urlProtocolClasses: [AnyClass]? = nil,
+        allowHTTPLoopback: Bool = false
     ) throws {
         self.credentials = credentials
 
@@ -226,8 +227,12 @@ public actor VaultwardenClient {
             envKey: "SHIKKI_VAULT_URL",
             devDefault: "https://vw.obyw.one"
         )
-        guard let url = URL(string: resolvedURLString),
-              url.scheme == "https" else {
+        guard let url = URL(string: resolvedURLString) else {
+            throw VaultwardenClientError.invalidServerURL(raw: resolvedURLString)
+        }
+        let isLoopbackHTTP = url.scheme == "http" &&
+            (url.host == "127.0.0.1" || url.host == "localhost")
+        guard url.scheme == "https" || (allowHTTPLoopback && isLoopbackHTTP) else {
             throw VaultwardenClientError.invalidServerURL(raw: resolvedURLString)
         }
         self.baseURL = url
