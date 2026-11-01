@@ -189,9 +189,7 @@ final class FakeVaultwardenServer: @unchecked Sendable {
     /// Asserts all stored ciphers carry EncStrings (not plaintext).
     /// Throws if any field does not carry the `2.` AES256_CBC_HMAC_SHA256 prefix.
     func assertCiphersAreEncrypted() throws {
-        stateLock.lock()
-        let rows = Array(_ciphers.values)
-        stateLock.unlock()
+        let rows = stateLock.withLock { Array(_ciphers.values) }
         for row in rows {
             guard row.encName.hasPrefix("2.") else {
                 throw FakeServerError.plaintextField("name", row.encName)
@@ -269,25 +267,21 @@ final class FakeVaultwardenServer: @unchecked Sendable {
         }
 
         let id = UUID().uuidString
-        stateLock.lock()
-        _ciphers[id] = CipherRow(id: id, encName: body.name, encNotes: body.notes)
-        stateLock.unlock()
+        stateLock.withLock {
+            _ciphers[id] = CipherRow(id: id, encName: body.name, encNotes: body.notes)
+        }
 
         return try Self.makeJSONResponse(VWCipherCreateResponse(id: id, name: body.name))
     }
 
     private func handleListCiphers() throws -> Response {
-        stateLock.lock()
-        let rows = Array(_ciphers.values)
-        stateLock.unlock()
+        let rows = stateLock.withLock { Array(_ciphers.values) }
         let items = rows.map { VWCipherListItem(id: $0.id, name: $0.encName) }
         return try Self.makeJSONResponse(VWCipherListResponse(data: items))
     }
 
     private func handleGetCipher(id: String) throws -> Response {
-        stateLock.lock()
-        let row = _ciphers[id]
-        stateLock.unlock()
+        let row = stateLock.withLock { _ciphers[id] }
         guard let row else {
             return try Self.makeErrorResponse(status: .notFound, error: "cipher_not_found")
         }
@@ -297,9 +291,7 @@ final class FakeVaultwardenServer: @unchecked Sendable {
     }
 
     private func handleDeleteCipher(id: String) throws -> Response {
-        stateLock.lock()
-        _ciphers.removeValue(forKey: id)
-        stateLock.unlock()
+        stateLock.withLock { _ciphers.removeValue(forKey: id) }
         return try Self.makeJSONResponse(VWEmpty())
     }
 
