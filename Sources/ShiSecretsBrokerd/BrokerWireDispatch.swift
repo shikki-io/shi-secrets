@@ -49,6 +49,17 @@ public actor BrokerWireDispatcher {
         case "secret.delete":
             return await dispatchSecretDelete(request, peerUid: peerUid)
 
+        // feat/vault-unlock-2026-11-01 — vault key lifecycle surface.
+        // vault.unlock: typed once by the operator; derives the SymmetricKeyPair
+        //   and holds it in memory only. Never logged, never stored.
+        // vault.status: reports { "locked": Bool } — safe to call unauthenticated
+        //   (no secret material is present in the response).
+        case "vault.unlock":
+            return await dispatchVaultUnlock(request, peerUid: peerUid)
+
+        case "vault.status":
+            return await dispatchVaultStatus(request, peerUid: peerUid)
+
         // Phase 0.5+: token.{revoke, revokeAllBots, revokeAllBotsSigned}.
         // Phase 0.6+: audit.{blastRadius, recent, seams}.
         default:
@@ -411,6 +422,62 @@ public actor BrokerWireDispatcher {
             .joined()
         return sanitized.isEmpty ? "uid:\(uid)" : sanitized
     }
+
+    // MARK: - vault.unlock (feat/vault-unlock-2026-11-01)
+
+    /// Derives the vault session key from the master password and holds it
+    /// in memory only. The password itself is never logged or stored.
+    ///
+    /// Wire params: `{ "masterPassword": String, "email": String }`
+    /// Wire result on success: `{ "ok": true }`
+    /// Wire error on wrong password or missing account key:
+    ///   code: -32000 (denied), message: human-readable failure reason.
+    ///
+    /// Security: vault.unlock is gated to the ownerUid — only the
+    /// interactive operator can unlock the vault, never a remote peer.
+    private func dispatchVaultUnlock(_ request: WireRequest, peerUid: UInt32) async -> WireResponse {
+        // Gate: only the broker owner may unlock the vault.
+        if let denied = await requireOwner(request, peerUid: peerUid) { return denied }
+
+        struct UnlockParams: Decodable {
+            let masterPassword: String
+            let email: String
+        }
+        let params: UnlockParams
+        do {
+            params = try decodeParams(UnlockParams.self, from: request.params)
+        } catch {
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.invalidParams,
+                message: "vault.unlock requires {masterPassword, email}: \(error)"
+            ))
+        }
+
+        do {
+            try await daemon.bwClient.unlock(masterPassword: params.masterPassword, email: params.email)
+            return WireResponse(id: request.id, result: .object(["ok": .bool(true)]))
+        } catch {
+            // Surface the failure clearly; do NOT echo the password back.
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.denied,
+                message: "vault.unlock failed: \(error)"
+            ))
+        }
+    }
+
+    // MARK: - vault.status (feat/vault-unlock-2026-11-01)
+
+    /// Reports the current locked/unlocked state. Safe to call without
+    /// owner auth — reveals no secret material.
+    ///
+    /// Wire params: none required.
+    /// Wire result: `{ "locked": Bool }`
+    private func dispatchVaultStatus(_ request: WireRequest, peerUid: UInt32) async -> WireResponse {
+        let unlocked = await daemon.bwClient.isVaultUnlocked
+        return WireResponse(id: request.id, result: .object(["locked": .bool(!unlocked)]))
+    }
+
+    // MARK: - Helpers
 
     /// Decode a typed params struct from a JSONValue tree by re-encoding
     /// through JSON. Avoids ad-hoc per-method JSON walking.

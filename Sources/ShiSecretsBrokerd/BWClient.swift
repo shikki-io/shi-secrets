@@ -76,6 +76,23 @@ public protocol BWClient: BWClientWriteBack, Sendable {
     /// `invalidateSession` call. BrokerDaemon captures it before
     /// signing and re-checks after, closing the mint-vs-invalidate race.
     var sessionEpoch: UInt64 { get async }
+
+    // MARK: - Vault unlock surface (feat/vault-unlock-2026-11-01)
+    //
+    // The access token authenticates the CALL; the master password unlocks
+    // the DATA. Both must be present for secret.{get,set,list,delete} to
+    // return plaintext. A caller that has a valid token but has not unlocked
+    // will receive VaultUnlockError.locked from those methods.
+
+    /// Derive the vault session key from the master password.
+    /// Never stores the password; the derived SymmetricKeyPair lives only
+    /// in memory for the life of the broker process.
+    /// Throws VaultUnlockError on wrong password or missing account key.
+    func unlock(masterPassword: String, email: String) async throws
+
+    /// True once unlock(masterPassword:email:) has succeeded and the
+    /// derived key is held in memory.
+    var isVaultUnlocked: Bool { get async }
 }
 
 // MARK: - InMemoryBWClient (fake / default DEBUG + test binding)
@@ -157,6 +174,27 @@ public actor InMemoryBWClient: BWClient {
     }
 
     public var isSessionValid: Bool { sessionValid }
+
+    // MARK: - Vault unlock (feat/vault-unlock-2026-11-01)
+    //
+    // In-memory fake: any non-empty password succeeds. Tests that need a
+    // wrong-password failure should pass an empty string, which is refused.
+    // The real password is never present in any test; only fake KDF fixture
+    // values are exercised.
+
+    private var _vaultUnlocked: Bool = false
+
+    /// Fake unlock — accepts any non-empty password. An empty password
+    /// simulates a wrong-password failure (VaultUnlockError.locked).
+    public func unlock(masterPassword: String, email: String) async throws {
+        guard !masterPassword.isEmpty else {
+            throw VaultUnlockError.locked
+        }
+        _vaultUnlocked = true
+    }
+
+    /// Whether the in-memory vault is unlocked.
+    public var isVaultUnlocked: Bool { _vaultUnlocked }
 }
 
 // MARK: - ProductionBWClient (W3 — full read+write VaultwardenClient-backed)
@@ -262,4 +300,25 @@ public actor ProductionBWClient: BWClient {
 
     /// Monotonically bumped by `invalidateSession` (review finding U5).
     public var sessionEpoch: UInt64 { _sessionEpoch }
+
+    // MARK: - Vault unlock (feat/vault-unlock-2026-11-01)
+
+    /// Derive the vault session key. Delegates to VaultwardenClient.unlock.
+    /// Requires that wire(client:) has already been called (i.e. the broker
+    /// has an authenticated session). A wrong master password fails as
+    /// macMismatch — the server does not know the password.
+    public func unlock(masterPassword: String, email: String) async throws {
+        guard _sessionValid, let vc = vaultClient else {
+            throw BWClientError.sessionInvalidated
+        }
+        try await vc.unlock(masterPassword: masterPassword, email: email)
+    }
+
+    /// True once unlock succeeded and the derived key is in memory.
+    public var isVaultUnlocked: Bool {
+        get async {
+            guard let vc = vaultClient else { return false }
+            return await vc.isVaultUnlocked
+        }
+    }
 }
