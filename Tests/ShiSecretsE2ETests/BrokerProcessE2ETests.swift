@@ -228,7 +228,7 @@ struct ShiSecretsBrokerProcessE2E {
             masterPassword: fixturePassword,
             email:          fixtureEmail
         )
-        try await server.start()
+        try server.start()
 
         let binaryPath = try resolveBinary()
         let socketPath = "/tmp/e2e-brkr-\(UUID().uuidString.prefix(8)).sock"
