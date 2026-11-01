@@ -24,10 +24,11 @@
 // start() is async throws, using Application.make (Vapor 4.77+ async factory)
 // and app.startup() which binds the port and returns immediately.
 //
-// stop() is synchronous (called from defer blocks). It captures the Application
-// in a Task.detached that calls asyncShutdown(). The captured reference keeps
-// the Application alive until shutdown completes, satisfying Vapor's deinit
-// assertion without requiring a blocking semaphore or async defer.
+// stop() is synchronous (called from defer blocks). It calls app.shutdown()
+// (the sync Vapor API) which runs lifecycle.shutdown() + lifecycle.wait() —
+// this stops the ServeCommand and satisfies Vapor's deinit assertion.
+// app.startup() is used for startup (correctly binds ephemeral port); the
+// sync shutdown() is safe for teardown in test code.
 
 import Foundation
 import Vapor
@@ -122,19 +123,14 @@ final class FakeVaultwardenServer: @unchecked Sendable {
     }
 
     /// Stop the server. Synchronous so it can be called from a defer block.
-    /// Blocks via DispatchSemaphore until asyncShutdown() completes, preventing
-    /// the test process from exiting while Vapor's ServeCommand is still running.
-    /// This satisfies Vapor's deinit assertion: the Application is never
-    /// deinitialized before shutdown() is called.
+    /// Calls app.shutdown() (Vapor's sync lifecycle API) which stops the
+    /// ServeCommand and satisfies Vapor's deinit assertion. Using a detached
+    /// Task + semaphore to call asyncShutdown() deadlocks the Swift cooperative
+    /// thread pool; the sync path avoids that entirely.
     func stop() {
         guard let app = vaporApp else { return }
         vaporApp = nil
-        let sem = DispatchSemaphore(value: 0)
-        Task.detached {
-            try? await app.asyncShutdown()
-            sem.signal()
-        }
-        _ = sem.wait(timeout: .now() + 10)
+        app.shutdown()
     }
 
     // MARK: Assertions
