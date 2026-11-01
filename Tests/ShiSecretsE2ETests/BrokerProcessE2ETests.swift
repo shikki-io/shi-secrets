@@ -153,6 +153,67 @@ struct ShiSecretsBrokerProcessE2E {
                 "socket must be removed after broker SIGTERM")
     }
 
+    // MARK: - Restart test
+
+    @Test("broker restart: vault returns to locked state after restart")
+    func test_restartReturnsToLocked() async throws {
+        let (server, client, broker, socketPath) = try await Self.setup()
+        defer { server.stop() }
+        defer { try? FileManager.default.removeItem(atPath: socketPath) }
+
+        // Unlock the vault — the in-memory session key is now held by broker1.
+        try await client.vaultUnlock(
+            masterPassword: Self.fixturePassword,
+            email: Self.fixtureEmail
+        )
+        let status1 = try await client.vaultStatus()
+        #expect(status1.locked == false, "vault must be unlocked before restart")
+
+        // Terminate broker1 and wait for the socket to disappear.
+        broker.terminate()
+        for _ in 0..<30 {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            if !FileManager.default.fileExists(atPath: socketPath) { break }
+        }
+        #expect(!FileManager.default.fileExists(atPath: socketPath),
+                "socket must vanish before restart")
+
+        // Launch broker2 on the same socket path — fresh process, no session state.
+        let binaryPath = try Self.resolveBinary()
+        let env: [String: String] = [
+            "SHIKKI_E2E_CLIENT_ID":     Self.fixtureClientID,
+            "SHIKKI_E2E_CLIENT_SECRET": Self.fixtureClientSecret,
+            "SHIKKI_E2E_VAULT_URL":     "http://127.0.0.1:\(server.port)",
+            "SHIKKI_BROKER_SOCKET":     socketPath,
+            "HOME":                     NSHomeDirectory(),
+            "PATH":                     "/usr/bin:/bin:/usr/local/bin",
+        ]
+        let broker2 = Process()
+        broker2.executableURL  = URL(fileURLWithPath: binaryPath)
+        broker2.arguments      = ["--dry-run", "--socket", socketPath]
+        broker2.environment    = env
+        broker2.standardOutput = FileHandle.nullDevice
+        broker2.standardError  = FileHandle.nullDevice
+        defer { broker2.terminate() }
+        try broker2.run()
+
+        // Wait for broker2's socket (up to 10 s).
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            if FileManager.default.fileExists(atPath: socketPath) { break }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        guard FileManager.default.fileExists(atPath: socketPath) else {
+            throw E2EError.socketTimeout(socketPath)
+        }
+
+        // The fresh process holds no session key — vault must start locked.
+        // SocketConnection opens a new connection per request, so no stale handle.
+        let status2 = try await client.vaultStatus()
+        #expect(status2.locked == true,
+                "vault must be locked after restart — process restart must not persist session state")
+    }
+
     // MARK: - Helpers
 
     private static func setup() async throws
@@ -167,7 +228,7 @@ struct ShiSecretsBrokerProcessE2E {
             masterPassword: fixturePassword,
             email:          fixtureEmail
         )
-        try server.start()
+        try await server.start()
 
         let binaryPath = try resolveBinary()
         let socketPath = "/tmp/e2e-brkr-\(UUID().uuidString.prefix(8)).sock"
