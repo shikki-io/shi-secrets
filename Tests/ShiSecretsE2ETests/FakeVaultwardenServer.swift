@@ -18,17 +18,18 @@
 // Thread-safety: cipher state is protected by NSLock — no `await` is held
 // while the lock is acquired, so there is no risk of actor re-entrancy.
 //
-// Ephemeral port: Vapor binds to 127.0.0.1:0; after start() returns,
-// app.http.server.shared.localAddress?.port holds the assigned port.
+// Port allocation: In Vapor 4.122.x, app.http.server.shared.localAddress
+// returns nil after startup() because NIO's channel binding completes
+// asynchronously. We pre-bind a POSIX socket to port 0 to get the OS-
+// assigned ephemeral port, close it immediately, and tell Vapor to use that
+// specific port. The tiny race window is acceptable in a loopback test.
 //
-// start() is async throws, using Application.make (Vapor 4.77+ async factory)
-// and app.startup() which binds the port and returns immediately.
+// start() is async throws, using Application.make(.testing) async factory
+// and app.startup() to bind the port and start the server.
 //
 // stop() is synchronous (called from defer blocks). It calls app.shutdown()
-// (the sync Vapor API) which runs lifecycle.shutdown() + lifecycle.wait() —
-// this stops the ServeCommand and satisfies Vapor's deinit assertion.
-// app.startup() is used for startup (correctly binds ephemeral port); the
-// sync shutdown() is safe for teardown in test code.
+// (Vapor's sync lifecycle API) which runs lifecycle.shutdown() + lifecycle.wait(),
+// stopping the ServeCommand and satisfying Vapor's deinit assertion.
 
 import Foundation
 import Vapor
@@ -105,32 +106,74 @@ final class FakeVaultwardenServer: @unchecked Sendable {
     // MARK: Lifecycle
 
     /// Start the server on an ephemeral loopback port.
-    /// Application.make + startup() bind the port and return without blocking.
+    ///
+    /// Pre-binds a POSIX socket to port 0 to get the OS-assigned ephemeral port
+    /// (Vapor 4.122.x does not reliably expose the port after startup via
+    /// app.http.server.shared.localAddress — the NIO bind completes asynchronously
+    /// and the property returns nil). The socket is closed before Vapor starts,
+    /// leaving the port available. Loopback-only; tiny race window is acceptable.
     func start() async throws {
+        let ephemeralPort = try Self.reserveEphemeralPort()
+
         let app = try await Application.make(.testing)
         app.http.server.configuration.hostname = "127.0.0.1"
-        app.http.server.configuration.port = 0  // kernel assigns an ephemeral port
+        app.http.server.configuration.port = ephemeralPort
 
         registerRoutes(on: app)
-        try await app.startup()
-
-        guard let boundPort = app.http.server.shared.localAddress?.port else {
+        do {
+            try await app.startup()
+        } catch {
+            // asyncShutdown() is required here because shutdown() is noasync.
+            // If startup() failed the ServeCommand was never set running, so
+            // asyncShutdown() failing is acceptable — deinit assertion won't fire.
             try? await app.asyncShutdown()
-            throw FakeServerError.portNotBound
+            throw error
         }
-        self.port = boundPort
+
+        self.port = ephemeralPort
         self.vaporApp = app
     }
 
     /// Stop the server. Synchronous so it can be called from a defer block.
-    /// Calls app.shutdown() (Vapor's sync lifecycle API) which stops the
-    /// ServeCommand and satisfies Vapor's deinit assertion. Using a detached
-    /// Task + semaphore to call asyncShutdown() deadlocks the Swift cooperative
-    /// thread pool; the sync path avoids that entirely.
+    /// Calls app.shutdown() (Vapor's sync lifecycle API) which runs
+    /// lifecycle.shutdown() + lifecycle.wait(), stopping the ServeCommand and
+    /// satisfying Vapor's deinit assertion. Using a detached Task + semaphore
+    /// deadlocks the Swift cooperative thread pool; the sync path avoids that.
     func stop() {
         guard let app = vaporApp else { return }
         vaporApp = nil
         app.shutdown()
+    }
+
+    // MARK: - Port allocation
+
+    /// Pre-bind a POSIX socket to port 0 to obtain an OS-assigned ephemeral port,
+    /// then immediately close the socket. The caller uses the returned port number.
+    private static func reserveEphemeralPort() throws -> Int {
+        let sock = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        guard sock >= 0 else { throw FakeServerError.portNotBound }
+        defer { Darwin.close(sock) }
+
+        var reuseAddr: Int32 = 1
+        Darwin.setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuseAddr, socklen_t(MemoryLayout<Int32>.size))
+
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = 0
+        addr.sin_addr.s_addr = UInt32(bigEndian: INADDR_LOOPBACK)
+        var addrLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+
+        let bindResult = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(sock, $0, addrLen) }
+        }
+        guard bindResult == 0 else { throw FakeServerError.portNotBound }
+
+        let nameResult = withUnsafeMutablePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.getsockname(sock, $0, &addrLen) }
+        }
+        guard nameResult == 0 else { throw FakeServerError.portNotBound }
+
+        return Int(addr.sin_port.bigEndian)
     }
 
     // MARK: Assertions
