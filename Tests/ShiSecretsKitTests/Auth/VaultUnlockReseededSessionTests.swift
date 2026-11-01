@@ -39,7 +39,7 @@ private final class VaultUnlockMockProtocol: URLProtocol, @unchecked Sendable {
     // Per-suite state — tests serialized by @Suite(.serialized).
     nonisolated(unsafe) static var tokenBody: Data?
     nonisolated(unsafe) static var preloginBody: Data?
-    nonisolated(unsafe) static var ciphersBody: Data = #"{"Data":[]}"#.data(using: .utf8)!
+    nonisolated(unsafe) static var ciphersBody: Data = #"{"data":[]}"#.data(using: .utf8)!
 
     override class func canInit(with request: URLRequest) -> Bool {
         request.url?.host?.hasSuffix("mock-vault-unlock.test") == true
@@ -130,7 +130,7 @@ private func installMockResponses(protectedKey: String) {
     VaultUnlockMockProtocol.preloginBody = """
     {"kdf": 0, "kdfIterations": \(fixtureIter)}
     """.data(using: .utf8)
-    VaultUnlockMockProtocol.ciphersBody = #"{"Data":[]}"#.data(using: .utf8)!
+    VaultUnlockMockProtocol.ciphersBody = #"{"data":[]}"#.data(using: .utf8)!
 }
 
 // MARK: - Suite
