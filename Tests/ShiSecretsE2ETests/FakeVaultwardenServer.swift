@@ -21,12 +21,13 @@
 // Ephemeral port: Vapor binds to 127.0.0.1:0; after start() returns,
 // app.http.server.shared.localAddress?.port holds the assigned port.
 //
-// start() is synchronous (throws). The sync Application.init + app.start() pair
-// is used deliberately: it fully manages the didShutdown lifecycle flag and pairs
-// correctly with synchronous app.shutdown() in stop(). Application.make (async
-// factory) and asyncShutdown() pair together but cannot be called from a defer
-// block without a semaphore dance. For test-only code the deprecation warning on
-// Application.init is acceptable.
+// start() is async throws, using Application.make (Vapor 4.77+ async factory)
+// and app.startup() which binds the port and returns immediately.
+//
+// stop() is synchronous (called from defer blocks). It captures the Application
+// in a Task.detached that calls asyncShutdown(). The captured reference keeps
+// the Application alive until shutdown completes, satisfying Vapor's deinit
+// assertion without requiring a blocking semaphore or async defer.
 
 import Foundation
 import Vapor
@@ -102,27 +103,33 @@ final class FakeVaultwardenServer: @unchecked Sendable {
 
     // MARK: Lifecycle
 
-    /// Start the server on an ephemeral loopback port. Synchronous — Vapor binds
-    /// and begins accepting before this method returns.
-    func start() throws {
-        let app = Application(.testing)  // swiftlint:disable:this deprecated_api
+    /// Start the server on an ephemeral loopback port.
+    /// Application.make + startup() bind the port and return without blocking.
+    func start() async throws {
+        let app = try await Application.make(.testing)
         app.http.server.configuration.hostname = "127.0.0.1"
         app.http.server.configuration.port = 0  // kernel assigns an ephemeral port
 
         registerRoutes(on: app)
-        try app.start()
+        try await app.startup()
 
         guard let boundPort = app.http.server.shared.localAddress?.port else {
-            app.shutdown()
+            try? await app.asyncShutdown()
             throw FakeServerError.portNotBound
         }
         self.port = boundPort
         self.vaporApp = app
     }
 
+    /// Stop the server. Synchronous so it can be called from a defer block.
+    /// Fires asyncShutdown() in a detached Task; the captured reference keeps
+    /// the Application alive until Vapor's shutdown assertion is satisfied.
     func stop() {
-        vaporApp?.shutdown()
+        guard let app = vaporApp else { return }
         vaporApp = nil
+        Task.detached {
+            try? await app.asyncShutdown()
+        }
     }
 
     // MARK: Assertions
