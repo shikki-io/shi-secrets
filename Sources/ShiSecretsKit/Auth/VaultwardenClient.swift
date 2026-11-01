@@ -837,9 +837,14 @@ public actor VaultwardenClient {
 
 // MARK: - URL form encoding helper
 
-private extension String {
+extension String {
+    /// RFC 3986 unreserved only: `.urlQueryAllowed` leaves `+`, `&`, `=` bare, and a
+    /// form parser reads those as a space or a separator.
     var urlFormEncoded: String {
-        addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? self
+        let unreserved = CharacterSet(
+            charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+        )
+        return addingPercentEncoding(withAllowedCharacters: unreserved) ?? self
     }
 }
 
