@@ -27,6 +27,18 @@ public protocol BrokerClient: Sendable {
     func blastRadius(jti: String) async throws -> BlastRadiusReport
     func recentAudit(hours: Int) async throws -> [AuditRow]
     func seamsRows() async throws -> [SeamsWriter.Row]
+
+    // MARK: - vault.* (feat/vault-unlock-2026-11-01)
+    /// Derive the vault session key from the master password. Never stored.
+    func vaultUnlock(masterPassword: String, email: String) async throws
+    /// Query the daemon's locked/unlocked state (no secret material returned).
+    func vaultStatus() async throws -> VaultStatus
+}
+
+/// Result from vault.status. True means locked; data operations will fail.
+public struct VaultStatus: Sendable, Equatable {
+    public let locked: Bool
+    public init(locked: Bool) { self.locked = locked }
 }
 
 // MARK: - Result types
