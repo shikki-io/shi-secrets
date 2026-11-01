@@ -1,4 +1,4 @@
-// kagami-scope: exempt — resolver-exempt marker only (no behavioral change); package has no .kagami/scopes.yaml coverage.
+// kagami-scope: ShiSecretsBrokerdTests
 import Crypto
 import Foundation
 import ShiSecretsKit
@@ -11,10 +11,57 @@ import ShiSecretsKit
 // supervisor required — the daemon manages its own lifecycle.
 //
 // BR-I-04: bootstrap.unseal is the first runtime action. On failure the
-// process exits non-zero; no socket is bound.
+// process exits with a code determined by sealedExitCode(for:):
+//   - keychainCredentialsMissing / keychainCredentialsMalformed → exit(0)
+//     (KeepAlive.SuccessfulExit=false stops the launchd crash-loop)
+//   - all other errors → exit non-zero (original behaviour, retried by launchd)
 //
 // Signal handling: SIGTERM / SIGINT cancel the watchdog task, which calls
 // socket.shutdown() so accept() returns EBADF and runAcceptLoop exits.
+
+// MARK: - Sealed-exit helpers (testable pure functions)
+
+/// Returns the exit code for a bootstrap error that indicates a permanent
+/// configuration gap that a crash-loop cannot resolve.
+/// Returns nil for transient errors where launchd restart is acceptable.
+///
+/// keychainCredentialsMissing / keychainCredentialsMalformed → 0
+///   A clean exit (0) paired with KeepAlive.SuccessfulExit=false stops the
+///   launchd restart cycle. The operator must run
+///   `shi secrets setup vault-credentials` to seed the Keychain item, then
+///   restart via `launchctl kickstart gui/$(id -u)/io.shikki.secrets-brokerd`.
+///
+/// vaultwardenConnectFailed → nil  (transient; launchd may retry)
+internal func sealedExitCode(for error: Error) -> Int32? {
+    switch error {
+    case BootstrapError.keychainCredentialsMissing: return 0
+    case BootstrapError.keychainCredentialsMalformed: return 0
+    default: return nil
+    }
+}
+
+/// Human-readable operator message for the sealed-exit cases, designed to
+/// appear in the stderr log and point directly to the remediation command.
+/// Returns nil for errors that don't warrant a sealed exit.
+internal func sealedExitMessage(for error: Error) -> String? {
+    switch error {
+    case BootstrapError.keychainCredentialsMissing:
+        return
+            "shikki-secrets-brokerd: vault credentials not seeded — " +
+            "run `shi secrets setup vault-credentials --server-url <vw-url> " +
+            "--client-id <user.UUID>` (get credentials from Bitwarden → Settings → " +
+            "Security → Keys → API Key), then restart the agent with: " +
+            "launchctl kickstart gui/$(id -u)/io.shikki.secrets-brokerd"
+    case BootstrapError.keychainCredentialsMalformed:
+        return
+            "shikki-secrets-brokerd: vault credentials malformed in Keychain — " +
+            "run `shi secrets setup vault-credentials --server-url <vw-url> " +
+            "--client-id <user.UUID> --force` to replace them, then restart with: " +
+            "launchctl kickstart gui/$(id -u)/io.shikki.secrets-brokerd"
+    default:
+        return nil
+    }
+}
 
 // MARK: - Shutdown coordinator (actor-isolated)
 
@@ -93,6 +140,15 @@ struct BrokerMain {
             do {
                 (prodVault, signingKey) = try await bootstrap.unseal()
             } catch {
+                // Permanent config gaps (missing/malformed Keychain entry) exit
+                // cleanly so launchd does not restart into an infinite crash-loop.
+                // KeepAlive.SuccessfulExit=false in the plist means exit(0) stops
+                // all further restarts until the operator re-seals and kickstarts.
+                if let code = sealedExitCode(for: error),
+                   let message = sealedExitMessage(for: error) {
+                    log(message)
+                    exit(code)
+                }
                 log("shikki-secrets-brokerd: bootstrap.unseal failed — refusing to start: \(error)")
                 throw BootstrapError.unsealFailed
             }
