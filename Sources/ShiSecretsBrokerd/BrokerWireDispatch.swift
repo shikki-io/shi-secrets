@@ -455,6 +455,13 @@ public actor BrokerWireDispatcher {
 
         do {
             try await daemon.bwClient.unlock(masterPassword: params.masterPassword, email: params.email)
+            // Verification probe: perform a list() call to confirm the session is
+            // genuinely usable before reporting success. unlock() derives the vault
+            // key in memory, but a stale / empty session cache means every
+            // subsequent API call would throw notAuthenticated — this probe
+            // surfaces that failure HERE rather than letting the CLI print
+            // "Vault unlocked." while later calls silently fail.
+            _ = try await daemon.bwClient.list()
             return WireResponse(id: request.id, result: .object(["ok": .bool(true)]))
         } catch {
             // Surface the failure clearly; do NOT echo the password back.

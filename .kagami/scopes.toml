@@ -71,9 +71,9 @@ name = "ShiSecretsE2ETests"
 package_path = "."
 source_paths = ["Tests/ShiSecretsE2ETests/"]
 test_command = ["swift", "test", "--filter", "ShiSecretsE2ETests"]
-test_file_patterns = ["**/ClaudeCodeMCPE2ETests.swift", "**/E2ESupport.swift", "**/RevokeAllBotsE2ETests.swift", "**/SecretsGetEndToEndTests.swift", "**/SecretsLifecycleRealVaultwardenTests.swift", "**/SecretsLifecycleTests.swift", "**/SecurityScenariosE2ETests.swift", "**/VaultEncryptionAuditLiveTests.swift"]
+test_file_patterns = ["**/BrokerVaultUnlockE2ETests.swift", "**/ClaudeCodeMCPE2ETests.swift", "**/E2ESupport.swift", "**/RevokeAllBotsE2ETests.swift", "**/SecretsGetEndToEndTests.swift", "**/SecretsLifecycleRealVaultwardenTests.swift", "**/SecretsLifecycleTests.swift", "**/SecurityScenariosE2ETests.swift", "**/VaultEncryptionAuditLiveTests.swift"]
 test_target_name = "ShiSecretsE2ETests"
-type_patterns = ["ClaudeCodeMCPE2ETests", "E2ESupport", "RevokeAllBotsE2ETests", "SecretsGetEndToEndTests", "SecretsLifecycleRealVaultwardenTests", "SecretsLifecycleTests", "SecretsLiveVaultwardenTests", "SecurityScenariosE2ETests", "VaultEncryptionAuditLiveTests"]
+type_patterns = ["BrokerVaultUnlockE2ETests", "ClaudeCodeMCPE2ETests", "E2ESupport", "RevokeAllBotsE2ETests", "SecretsGetEndToEndTests", "SecretsLifecycleRealVaultwardenTests", "SecretsLifecycleTests", "SecretsLiveVaultwardenTests", "SecurityScenariosE2ETests", "VaultEncryptionAuditLiveTests"]
 
 [[scopes]]
 discovered_via = "swift-package-ast"
