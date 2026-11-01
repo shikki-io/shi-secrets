@@ -1,6 +1,6 @@
-// FakeVaultwardenServer — Hummingbird-backed loopback HTTP server for BrokerProcessE2ETests.
+// FakeVaultwardenServer — Vapor-backed loopback HTTP server for BrokerProcessE2ETests.
 //
-// Replaces the hand-rolled POSIX HTTP/1.1 server with the Hummingbird 2.x framework
+// Replaces the Hummingbird 2.x implementation with Vapor 4.x
 // (TEST-ONLY dep — never linked into shi-secrets-brokerd or ShiSecretsKit).
 //
 // Endpoints served:
@@ -17,23 +17,19 @@
 //
 // Thread-safety: cipher state is protected by NSLock — no `await` is held
 // while the lock is acquired, so there is no risk of actor re-entrancy.
-// This keeps assertCiphersAreEncrypted() and start() synchronous (non-async)
-// matching the original API contract consumed by BrokerProcessE2ETests.
 //
-// Ephemeral port: a POSIX socket is opened on 127.0.0.1:0 to have the kernel
-// assign a free port; the fd is closed and that port is handed to Hummingbird.
-// The TOCTOU window is microseconds — acceptable for test code.
+// Ephemeral port: Vapor binds to 127.0.0.1:0; after start() returns,
+// app.http.server.shared.localAddress?.port holds the assigned port.
 //
-// start() becomes async throws to poll until Hummingbird is accepting
-// connections, giving the caller a reliable "server is ready" guarantee.
+// start() is async throws; Vapor 4.77+ prefers Application.make (async factory)
+// over the deprecated sync Application.init. After startup() returns the server
+// is bound and accepting, giving the caller a ready server with a known port.
 
 import Foundation
-import Hummingbird
-import NIOCore
+import Vapor
 import ShiSecretsKit
 
 #if canImport(Darwin)
-import Darwin
 import Security
 #endif
 
@@ -41,10 +37,10 @@ import Security
 
 final class FakeVaultwardenServer: @unchecked Sendable {
 
-    // MARK: Lifecycle
+    // MARK: Properties
 
+    private var vaporApp: Application?
     private(set) var port: Int = 0
-    private var serverTask: Task<Void, any Error>?
 
     // MARK: Cipher state (NSLock-protected, synchronous access)
 
@@ -103,85 +99,28 @@ final class FakeVaultwardenServer: @unchecked Sendable {
 
     // MARK: Lifecycle
 
-    /// Start the server. Async to poll until Hummingbird is accepting connections.
+    /// Start the server on an ephemeral loopback port. Uses Application.make
+    /// (Vapor 4.77+ async factory) to avoid the deprecated sync init. After
+    /// startup() returns the server is bound and accepting connections.
     func start() async throws {
-        port = try Self.allocateEphemeralPort()
+        let app = try await Application.make(.testing)
+        app.http.server.configuration.hostname = "127.0.0.1"
+        app.http.server.configuration.port = 0  // kernel assigns an ephemeral port
 
-        // Capture immutable state for the Hummingbird closures.
-        let capturedToken     = accessToken
-        let capturedKey       = protectedKey
-        let capturedKdfIter   = kdfIterations
-        let capturedClientID  = clientID
-        let capturedSecret    = clientSecret
-        let capturedSelf      = self
-        let capturedPort      = port
+        registerRoutes(on: app)
+        try await app.startup()
 
-        serverTask = Task {
-            let router = Router()
-
-            // POST /identity/connect/token
-            router.post("/identity/connect/token") { req, _ in
-                try await capturedSelf.handleToken(
-                    req,
-                    token: capturedToken,
-                    protectedKey: capturedKey,
-                    kdfIter: capturedKdfIter,
-                    clientID: capturedClientID,
-                    clientSecret: capturedSecret
-                )
-            }
-
-            // POST /identity/accounts/prelogin
-            router.post("/identity/accounts/prelogin") { _, _ in
-                try Self.makeJSONResponse(
-                    VWPreloginResponse(Kdf: 0, KdfIterations: capturedKdfIter)
-                )
-            }
-
-            // POST /api/ciphers
-            router.post("/api/ciphers") { req, _ in
-                try await capturedSelf.handleCreateCipher(req)
-            }
-
-            // GET /api/ciphers
-            router.get("/api/ciphers") { _, _ in
-                try capturedSelf.handleListCiphers()
-            }
-
-            // GET /api/ciphers/:id
-            router.get("/api/ciphers/:id") { _, ctx in
-                let id = String(ctx.parameters.get("id") ?? "")
-                return try capturedSelf.handleGetCipher(id: id)
-            }
-
-            // DELETE /api/ciphers/:id
-            router.delete("/api/ciphers/:id") { _, ctx in
-                let id = String(ctx.parameters.get("id") ?? "")
-                return try capturedSelf.handleDeleteCipher(id: id)
-            }
-
-            let app = Application(
-                router: router,
-                configuration: .init(address: .hostname("127.0.0.1", port: capturedPort))
-            )
-            try await app.run()
+        guard let boundPort = app.http.server.shared.localAddress?.port else {
+            try await app.asyncShutdown()
+            throw FakeServerError.portNotBound
         }
-
-        // Poll until the server is accepting connections (up to 5 s).
-        let deadline = Date().addingTimeInterval(5)
-        while Date() < deadline {
-            if Self.isListening(on: port) { return }
-            try await Task.sleep(nanoseconds: 20_000_000)  // 20 ms
-        }
-        // Timed out — cancel the server task and surface an error.
-        serverTask?.cancel()
-        serverTask = nil
-        throw FakeServerError.startupTimeout
+        self.port = boundPort
+        self.vaporApp = app
     }
 
     func stop() {
-        serverTask?.cancel()
-        serverTask = nil
+        vaporApp?.shutdown()
+        vaporApp = nil
     }
 
     // MARK: Assertions
@@ -200,24 +139,58 @@ final class FakeVaultwardenServer: @unchecked Sendable {
         }
     }
 
+    // MARK: - Route registration
+
+    private func registerRoutes(on app: Application) {
+        let capturedSelf = self
+
+        // POST /identity/connect/token
+        app.post("identity", "connect", "token") { req async throws -> Response in
+            try await capturedSelf.handleToken(req)
+        }
+
+        // POST /identity/accounts/prelogin
+        app.post("identity", "accounts", "prelogin") { req async throws -> Response in
+            try Self.makeJSONResponse(
+                VWPreloginResponse(Kdf: 0, KdfIterations: capturedSelf.kdfIterations)
+            )
+        }
+
+        // POST /api/ciphers
+        app.post("api", "ciphers") { req async throws -> Response in
+            try await capturedSelf.handleCreateCipher(req)
+        }
+
+        // GET /api/ciphers
+        app.get("api", "ciphers") { req async throws -> Response in
+            try capturedSelf.handleListCiphers()
+        }
+
+        // GET /api/ciphers/:id
+        app.get("api", "ciphers", ":id") { req async throws -> Response in
+            let id = req.parameters.get("id") ?? ""
+            return try capturedSelf.handleGetCipher(id: id)
+        }
+
+        // DELETE /api/ciphers/:id
+        app.delete("api", "ciphers", ":id") { req async throws -> Response in
+            let id = req.parameters.get("id") ?? ""
+            return try capturedSelf.handleDeleteCipher(id: id)
+        }
+    }
+
     // MARK: - Route handlers
 
-    private func handleToken(
-        _ req: Request,
-        token: String,
-        protectedKey: String,
-        kdfIter: Int,
-        clientID: String,
-        clientSecret: String
-    ) async throws -> Response {
-        // Collect request body (form-encoded).
-        var buffer = try await req.body.collect(upTo: 65_536)
-        let data   = buffer.readData(length: buffer.readableBytes) ?? Data()
-        let body   = String(data: data, encoding: .utf8) ?? ""
+    private func handleToken(_ req: Request) async throws -> Response {
+        // Collect body; broker sends application/x-www-form-urlencoded.
+        let maybeBuffer = try await req.body.collect(max: 65_536).get()
+        let bodyString  = maybeBuffer.flatMap {
+            $0.getString(at: $0.readerIndex, length: $0.readableBytes)
+        } ?? ""
 
-        // Parse application/x-www-form-urlencoded.
+        // Parse application/x-www-form-urlencoded manually (robust to missing Content-Type).
         var params: [String: String] = [:]
-        for pair in body.components(separatedBy: "&") {
+        for pair in bodyString.components(separatedBy: "&") {
             let kv = pair.components(separatedBy: "=")
             guard kv.count >= 2 else { continue }
             let key = kv[0]
@@ -229,41 +202,46 @@ final class FakeVaultwardenServer: @unchecked Sendable {
 
         guard params["client_id"] == clientID,
               params["client_secret"] == clientSecret else {
-            return try Self.makeErrorResponse(
-                status: .badRequest,
-                error: "invalid_client",
-                description: "client credentials invalid"
+            return try Self.makeJSONResponse(
+                VWErrorBody(error: "invalid_client", error_description: "client credentials invalid"),
+                status: .badRequest
             )
         }
         guard params["deviceType"] != nil,
               params["deviceIdentifier"] != nil else {
-            return try Self.makeErrorResponse(
-                status: .badRequest,
-                error: "invalid_client",
-                description: "Device field is required"
+            return try Self.makeJSONResponse(
+                VWErrorBody(error: "invalid_client", error_description: "Device field is required"),
+                status: .badRequest
             )
         }
 
         return try Self.makeJSONResponse(VWTokenResponse(
-            access_token: token,
+            access_token: accessToken,
             expires_in:   3600,
             token_type:   "Bearer",
             Key:          protectedKey,
             Kdf:          0,
-            KdfIterations: kdfIter
+            KdfIterations: kdfIterations
         ))
     }
 
     private func handleCreateCipher(_ req: Request) async throws -> Response {
-        var buffer = try await req.body.collect(upTo: 65_536)
-        guard let data = buffer.readData(length: buffer.readableBytes) else {
-            return try Self.makeErrorResponse(status: .badRequest, error: "empty_body")
+        let maybeBuffer = try await req.body.collect(max: 65_536).get()
+        guard let buffer = maybeBuffer else {
+            return try Self.makeJSONResponse(
+                VWErrorBody(error: "empty_body", error_description: nil),
+                status: .badRequest
+            )
         }
+        let data = buffer.getData(at: buffer.readerIndex, length: buffer.readableBytes) ?? Data()
         let body: VWCipherCreateRequest
         do {
             body = try JSONDecoder().decode(VWCipherCreateRequest.self, from: data)
         } catch {
-            return try Self.makeErrorResponse(status: .badRequest, error: "invalid_body")
+            return try Self.makeJSONResponse(
+                VWErrorBody(error: "invalid_body", error_description: nil),
+                status: .badRequest
+            )
         }
 
         let id = UUID().uuidString
@@ -275,7 +253,7 @@ final class FakeVaultwardenServer: @unchecked Sendable {
     }
 
     private func handleListCiphers() throws -> Response {
-        let rows = stateLock.withLock { Array(_ciphers.values) }
+        let rows  = stateLock.withLock { Array(_ciphers.values) }
         let items = rows.map { VWCipherListItem(id: $0.id, name: $0.encName) }
         return try Self.makeJSONResponse(VWCipherListResponse(data: items))
     }
@@ -283,7 +261,10 @@ final class FakeVaultwardenServer: @unchecked Sendable {
     private func handleGetCipher(id: String) throws -> Response {
         let row = stateLock.withLock { _ciphers[id] }
         guard let row else {
-            return try Self.makeErrorResponse(status: .notFound, error: "cipher_not_found")
+            return try Self.makeJSONResponse(
+                VWErrorBody(error: "cipher_not_found", error_description: nil),
+                status: .notFound
+            )
         }
         return try Self.makeJSONResponse(
             VWCipherItemResponse(id: row.id, name: row.encName, notes: row.encNotes)
@@ -291,110 +272,37 @@ final class FakeVaultwardenServer: @unchecked Sendable {
     }
 
     private func handleDeleteCipher(id: String) throws -> Response {
-        stateLock.withLock { _ciphers.removeValue(forKey: id) }
+        _ = stateLock.withLock { _ciphers.removeValue(forKey: id) }
         return try Self.makeJSONResponse(VWEmpty())
     }
 
     // MARK: - JSON response helpers
 
-    private static func makeJSONResponse<T: Encodable>(_ value: T) throws -> Response {
-        let data = try JSONEncoder().encode(value)
-        var headers = HTTPFields()
-        headers[.contentType] = "application/json"
-        return Response(
-            status: .ok,
-            headers: headers,
-            body: ResponseBody(byteBuffer: ByteBuffer(bytes: Array(data)))
-        )
-    }
-
-    private static func makeErrorResponse(
-        status: HTTPResponse.Status,
-        error: String,
-        description: String? = nil
+    private static func makeJSONResponse<T: Encodable>(
+        _ value: T,
+        status: HTTPStatus = .ok
     ) throws -> Response {
-        let data = try JSONEncoder().encode(
-            VWErrorBody(error: error, error_description: description)
-        )
-        var headers = HTTPFields()
-        headers[.contentType] = "application/json"
+        let data = try JSONEncoder().encode(value)
+        var headers = HTTPHeaders()
+        headers.add(name: .contentType, value: "application/json")
         return Response(
             status: status,
             headers: headers,
-            body: ResponseBody(byteBuffer: ByteBuffer(bytes: Array(data)))
+            body: .init(data: data)
         )
-    }
-
-    // MARK: - Port helpers
-
-    /// Bind to 127.0.0.1:0 to have the kernel assign a free ephemeral port.
-    /// Closes the fd immediately — Hummingbird re-binds to the same port.
-    /// TOCTOU window is microseconds; acceptable in test code.
-    private static func allocateEphemeralPort() throws -> Int {
-        let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw FakeServerError.portAlloc(errno) }
-        defer { Darwin.close(fd) }
-
-        var reuse: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
-
-        var sa = sockaddr_in()
-        sa.sin_family = sa_family_t(AF_INET)
-        sa.sin_port   = 0
-        sa.sin_addr   = in_addr(s_addr: Darwin.inet_addr("127.0.0.1"))
-        memset(&sa.sin_zero, 0, MemoryLayout.size(ofValue: sa.sin_zero))
-
-        let bindRC = withUnsafePointer(to: &sa) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        guard bindRC == 0 else { throw FakeServerError.portAlloc(errno) }
-
-        var bound    = sockaddr_in()
-        var boundLen = socklen_t(MemoryLayout<sockaddr_in>.size)
-        _ = withUnsafeMutablePointer(to: &bound) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                getsockname(fd, $0, &boundLen)
-            }
-        }
-        return Int(UInt16(bigEndian: bound.sin_port))
-    }
-
-    /// Probe whether a TCP server is accepting connections on loopback:port.
-    private static func isListening(on port: Int) -> Bool {
-        let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { return false }
-        defer { Darwin.close(fd) }
-
-        var sa = sockaddr_in()
-        sa.sin_family = sa_family_t(AF_INET)
-        sa.sin_port   = in_port_t(UInt16(port).bigEndian)
-        sa.sin_addr   = in_addr(s_addr: Darwin.inet_addr("127.0.0.1"))
-        memset(&sa.sin_zero, 0, MemoryLayout.size(ofValue: sa.sin_zero))
-
-        let rc = withUnsafePointer(to: &sa) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        return rc == 0
     }
 }
 
 // MARK: - Errors
 
 enum FakeServerError: Error, CustomStringConvertible {
-    case portAlloc(Int32)
-    case startupTimeout
+    case portNotBound
     case plaintextField(String, String)
 
     var description: String {
         switch self {
-        case .portAlloc(let e):
-            return "FakeVaultwardenServer: port allocation failed, errno=\(e)"
-        case .startupTimeout:
-            return "FakeVaultwardenServer: server did not become ready within 5 s"
+        case .portNotBound:
+            return "FakeVaultwardenServer: Vapor did not bind a port after start()"
         case .plaintextField(let f, let v):
             return "FakeVaultwardenServer: field '\(f)' is plaintext: \(v.prefix(32))…"
         }

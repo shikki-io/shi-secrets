@@ -27,9 +27,9 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
         .package(url: "https://github.com/FJ-Studios/shikki-plugin-api.git", from: "0.1.4"),
-        // TEST-ONLY: lightweight HTTP server for FakeVaultwardenServer in ShiSecretsE2ETests.
+        // TEST-ONLY: HTTP server for FakeVaultwardenServer in ShiSecretsE2ETests.
         // Never linked into the broker binary or any library product.
-        .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.5.0"),
+        .package(url: "https://github.com/vapor/vapor.git", from: "4.99.0"),
     ],
     targets: [
         // MARK: - Core library
@@ -159,8 +159,8 @@ let package = Package(
                 "ShiSecretsClient",
                 "ShiSecretsDrivers",
                 "ShiSecretsKit",
-                // Hummingbird: powers FakeVaultwardenServer — test-only, loopback TCP.
-                .product(name: "Hummingbird", package: "hummingbird"),
+                // Vapor: powers FakeVaultwardenServer — test-only, loopback TCP.
+                .product(name: "Vapor", package: "vapor"),
             ]
         ),
     ]
