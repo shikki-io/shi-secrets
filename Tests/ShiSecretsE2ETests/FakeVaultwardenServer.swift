@@ -122,14 +122,19 @@ final class FakeVaultwardenServer: @unchecked Sendable {
     }
 
     /// Stop the server. Synchronous so it can be called from a defer block.
-    /// Fires asyncShutdown() in a detached Task; the captured reference keeps
-    /// the Application alive until Vapor's shutdown assertion is satisfied.
+    /// Blocks via DispatchSemaphore until asyncShutdown() completes, preventing
+    /// the test process from exiting while Vapor's ServeCommand is still running.
+    /// This satisfies Vapor's deinit assertion: the Application is never
+    /// deinitialized before shutdown() is called.
     func stop() {
         guard let app = vaporApp else { return }
         vaporApp = nil
+        let sem = DispatchSemaphore(value: 0)
         Task.detached {
             try? await app.asyncShutdown()
+            sem.signal()
         }
+        _ = sem.wait(timeout: .now() + 10)
     }
 
     // MARK: Assertions
