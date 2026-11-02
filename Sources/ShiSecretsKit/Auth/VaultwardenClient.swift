@@ -213,7 +213,8 @@ public actor VaultwardenClient {
         credentials: VaultwardenCredentials,
         pinnedSHA256: String? = nil,
         configYmlVaultServer: String? = nil,
-        urlProtocolClasses: [AnyClass]? = nil
+        urlProtocolClasses: [AnyClass]? = nil,
+        allowHTTPLoopback: Bool = false
     ) throws {
         self.credentials = credentials
 
@@ -226,8 +227,12 @@ public actor VaultwardenClient {
             envKey: "SHIKKI_VAULT_URL",
             devDefault: "https://vw.obyw.one"
         )
-        guard let url = URL(string: resolvedURLString),
-              url.scheme == "https" else {
+        guard let url = URL(string: resolvedURLString) else {
+            throw VaultwardenClientError.invalidServerURL(raw: resolvedURLString)
+        }
+        let isLoopbackHTTP = url.scheme == "http" &&
+            (url.host == "127.0.0.1" || url.host == "localhost")
+        guard url.scheme == "https" || (allowHTTPLoopback && isLoopbackHTTP) else {
             throw VaultwardenClientError.invalidServerURL(raw: resolvedURLString)
         }
         self.baseURL = url
@@ -403,11 +408,31 @@ public actor VaultwardenClient {
     /// unwrapped — the server is not consulted and cannot tell us, because it
     /// does not know the password either. That is the model working.
     public func unlock(masterPassword: String, email: String) async throws {
-        // The account key normally rides along with the token. If we have not
-        // done an exchange yet, do one now rather than reporting "locked" for
-        // a vault that would open fine.
-        if accountProtectedKey == nil {
-            _ = try? await performTokenExchange()
+        // Ensure we have BOTH a valid session token AND the account protected
+        // key before attempting to derive the vault key.
+        //
+        // Two conditions require a fresh token exchange:
+        //   1. accountProtectedKey == nil — Bootstrap used the Keychain token-
+        //      cache path (seedTokenFromCache) which does not call performTokenExchange,
+        //      so captureKeyMaterial was never called and accountProtectedKey is unset.
+        //   2. sessionCache.currentToken() == nil — the token has expired since
+        //      Bootstrap seeded the cache, or the cache was never seeded (e.g. a
+        //      process that came up with a stale cached token that is now past its TTL).
+        //
+        // Using refreshToken() instead of performTokenExchange() is intentional:
+        //   - refreshToken() calls captureKeyMaterial (captures accountProtectedKey)
+        //   - refreshToken() calls sessionCache.setToken (seeds the cache)
+        //   - performTokenExchange() only returns a CachedToken without seeding the
+        //     cache; callers that need the cache seeded must call seedTokenFromCache
+        //     separately. Bootstrap does this. unlock() did not — that is the bug.
+        //
+        // The former `_ = try? await performTokenExchange()` silently swallowed
+        // token exchange failures and left the session cache empty, causing every
+        // subsequent API call (listSecrets, createCipher, …) to fail with
+        // VaultwardenClientError.notAuthenticated even though the vault was "unlocked".
+        let hasValidToken = await sessionCache.currentToken() != nil
+        if accountProtectedKey == nil || !hasValidToken {
+            try await refreshToken()
         }
         guard let protectedKey = accountProtectedKey else {
             throw VaultUnlockError.accountKeyMissing

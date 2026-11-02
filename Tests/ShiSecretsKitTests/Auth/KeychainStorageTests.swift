@@ -9,7 +9,18 @@ import Foundation
 
 // .serialized: tests share a single Keychain service+account; running in parallel
 // causes errSecDuplicateItem (-25299) races between setUp / tearDown calls.
-@Suite("Keychain Storage (BR-SM-01/02/03)", .serialized)
+//
+// SHIKKI_TEST_KEYCHAIN gate: on macOS without the keychain-access-groups
+// entitlement, SecItemAdd triggers an authorization dialog that blocks until
+// the operator dismisses it (up to 630 s). The suite is disabled by default
+// and opted in by setting SHIKKI_TEST_KEYCHAIN=1 in the environment before
+// the kagami / swift-test invocation.
+@Suite("Keychain Storage (BR-SM-01/02/03)", .serialized,
+    .enabled(
+        if: ProcessInfo.processInfo.environment["SHIKKI_TEST_KEYCHAIN"] == "1",
+        "Set SHIKKI_TEST_KEYCHAIN=1 to run Keychain integration tests"
+    )
+)
 struct KeychainStorageTests {
 
     // MARK: - Helpers

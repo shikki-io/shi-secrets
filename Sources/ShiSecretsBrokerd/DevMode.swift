@@ -158,10 +158,12 @@ public struct DevModeBootstrap: Sendable {
 /// style which reads env vars).
 public struct DevModeArgs: Sendable, Equatable {
     public var enabled: Bool
+    public var dryRun: Bool
     public var socketPath: String?
 
     public static func parse(_ args: [String]) -> DevModeArgs {
         var enabled = false
+        var dryRun  = false
         var socketPath: String?
         var i = 0
         while i < args.count {
@@ -169,6 +171,8 @@ public struct DevModeArgs: Sendable, Equatable {
             switch a {
             case "--dev-mode":
                 enabled = true
+            case "--dry-run":
+                dryRun = true
             case "--socket":
                 if i + 1 < args.count { socketPath = args[i + 1]; i += 1 }
             default:
@@ -178,6 +182,67 @@ public struct DevModeArgs: Sendable, Equatable {
             }
             i += 1
         }
-        return DevModeArgs(enabled: enabled, socketPath: socketPath)
+        return DevModeArgs(enabled: enabled, dryRun: dryRun, socketPath: socketPath)
+    }
+}
+
+// MARK: - DryRunBootstrap
+
+/// Boots the broker against a loopback VaultwardenClient.
+/// Used ONLY in process-level E2E tests — never in production or launchd.
+///
+/// Reads credentials from:
+///   SHIKKI_E2E_CLIENT_ID      — OAuth client_id
+///   SHIKKI_E2E_CLIENT_SECRET  — OAuth client_secret
+///   SHIKKI_E2E_VAULT_URL      — must be http://127.0.0.1:<port>
+///
+/// Does NOT call VaultwardenClient.connect() — the first token exchange
+/// happens inside vault.unlock, which is required to demonstrate the
+/// v0.8.0 session-seeding regression.
+public enum DryRunBootstrapError: Error, CustomStringConvertible {
+    case missingEnvVar(String)
+    case notLoopback(String)
+
+    public var description: String {
+        switch self {
+        case .missingEnvVar(let k):  return "dry-run: env var \(k) is required"
+        case .notLoopback(let url):  return "dry-run: SHIKKI_E2E_VAULT_URL must be http://127.0.0.1:<port>, got \(url)"
+        }
+    }
+}
+
+public struct DryRunBootstrap: Sendable {
+    public init() {}
+
+    public func unseal() async throws -> (bwClient: any BWClient, signingKey: BrokerSigningKey) {
+        let env = ProcessInfo.processInfo.environment
+        guard let clientID = env["SHIKKI_E2E_CLIENT_ID"] else {
+            throw DryRunBootstrapError.missingEnvVar("SHIKKI_E2E_CLIENT_ID")
+        }
+        guard let clientSecret = env["SHIKKI_E2E_CLIENT_SECRET"] else {
+            throw DryRunBootstrapError.missingEnvVar("SHIKKI_E2E_CLIENT_SECRET")
+        }
+        guard let vaultURLStr = env["SHIKKI_E2E_VAULT_URL"] else {
+            throw DryRunBootstrapError.missingEnvVar("SHIKKI_E2E_VAULT_URL")
+        }
+        guard let url = URL(string: vaultURLStr),
+              url.scheme == "http",
+              (url.host == "127.0.0.1" || url.host == "localhost") else {
+            throw DryRunBootstrapError.notLoopback(vaultURLStr)
+        }
+        let creds = VaultwardenCredentials(
+            clientID: clientID,
+            clientSecret: clientSecret,
+            serverURL: url
+        )
+        let vaultClient = try VaultwardenClient(
+            credentials: creds,
+            configYmlVaultServer: vaultURLStr,
+            allowHTTPLoopback: true
+        )
+        let bw = ProductionBWClient()
+        await bw.wire(client: vaultClient)
+        let signingKey = BrokerSigningKey(privateKey: Curve25519.Signing.PrivateKey())
+        return (bw, signingKey)
     }
 }
