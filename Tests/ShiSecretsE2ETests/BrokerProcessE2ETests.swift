@@ -138,6 +138,24 @@ struct ShiSecretsBrokerProcessE2E {
         #expect((unknown as? HTTPURLResponse)?.statusCode == 404)
     }
 
+    @Test("secret.delete: an entry leaves the list, and an unknown name is refused")
+    func test_deleteRemovesTheEntry() async throws {
+        let (server, client, broker, socketPath) = try await Self.setup()
+        defer { broker.terminate(); server.stop() }
+        defer { try? FileManager.default.removeItem(atPath: socketPath) }
+
+        try await client.vaultUnlock(masterPassword: Self.fixturePassword, email: Self.fixtureEmail)
+        try await client.set(name: "to-delete", value: "gone-soon")
+        #expect(try await client.list(filter: nil).map(\.name).contains("to-delete"))
+
+        try await client.delete(name: "to-delete")
+        #expect(try await !client.list(filter: nil).map(\.name).contains("to-delete"))
+
+        await #expect(throws: (any Error).self) {
+            try await client.delete(name: "to-delete")
+        }
+    }
+
     @Test("vault.unlock with wrong password returns error")
     func test_wrongPassword_returnsError() async throws {
         let (server, client, broker, socketPath) = try await Self.setup()
