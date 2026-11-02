@@ -40,7 +40,7 @@ public struct AppleKeychainCustody: VaultKeyCustody, Sendable {
 
     /// Production init.
     public init(
-        service: String = "eu.fj-studios.shikki.vault-key",
+        service: String = "io.shikki.vault-key",
         account: String = "vault-session-key",
         accessGroup: String? = nil
     ) {
@@ -56,7 +56,7 @@ public struct AppleKeychainCustody: VaultKeyCustody, Sendable {
     ///   - throw VaultKeyCustodyError.dataProtectionUnavailable  → simulates missing entitlement
     ///   - return normally                                        → simulates entitlement present
     public init(
-        service: String = "eu.fj-studios.shikki.vault-key",
+        service: String = "io.shikki.vault-key",
         account: String = "vault-session-key",
         accessGroup: String? = nil,
         availabilityProbe: @escaping @Sendable () throws -> Void

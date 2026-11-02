@@ -72,12 +72,12 @@ struct AppleKeychainCustodyTests {
     @Test("custodyDescription includes service and account")
     func test_custodyDescription() {
         let custody = AppleKeychainCustody(
-            service: "eu.fj-studios.shikki.vault-key",
+            service: "io.shikki.vault-key",
             account: "vault-session-key"
         )
         #expect(custody.custodyDescription.contains("apple-keychain"),
                 "description must include 'apple-keychain'")
-        #expect(custody.custodyDescription.contains("eu.fj-studios.shikki.vault-key"),
+        #expect(custody.custodyDescription.contains("io.shikki.vault-key"),
                 "description must include the service name")
     }
 }

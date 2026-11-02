@@ -13,7 +13,7 @@
 //   status — `launchctl list io.shikki.secrets-brokerd`
 //
 // Canonical label: io.shikki.secrets-brokerd (product domain, operator mandate 2026-06-24).
-// Supersedes: eu.fj-studios.shikki.secrets-brokerd (deprecated org-namespace label).
+// Supersedes: io.shikki.secrets-brokerd (deprecated org-namespace label).
 //
 // The plist path is:
 //   ~/.shikki/LaunchAgents/io.shikki.secrets-brokerd.plist   (macOS, W3 canonical)
@@ -40,7 +40,7 @@ public struct SecretsBrokerdCommand {
 
     private var plistPath: String {
         // W3 mandate 2026-06-24: canonical plist is now at ~/.shikki/LaunchAgents/ (not ~/Library/LaunchAgents/).
-        // Label: io.shikki.secrets-brokerd (product domain). Supersedes eu.fj-studios.shikki.secrets-brokerd.
+        // Label: io.shikki.secrets-brokerd (product domain). Supersedes io.shikki.secrets-brokerd.
         "\(NSHomeDirectory())/.shikki/LaunchAgents/io.shikki.secrets-brokerd.plist"
     }
 

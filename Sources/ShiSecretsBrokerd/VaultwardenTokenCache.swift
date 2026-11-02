@@ -36,7 +36,7 @@ actor VaultwardenTokenCache {
     /// shi-secrets-brokerd items live under one service and require the fewest ACL entries.
     /// Prompt count: 0 when signed (keychain-access-groups entitlement covers the ACL),
     ///               2 prompts unsigned on first run (one per service: io.shikki.vault,
-    ///               eu.fj-studios.shikki.vault-key), NOT 3 — token and credentials share
+    ///               io.shikki.vault-key), NOT 3 — token and credentials share
     ///               the same service.
     ///
     /// Carry-over from legacy service `io.shikki.vault.token` /
