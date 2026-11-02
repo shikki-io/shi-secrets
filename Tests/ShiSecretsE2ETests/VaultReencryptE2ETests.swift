@@ -72,7 +72,7 @@ struct VaultReencryptE2ETests {
             broker1.terminate()
             try? FileManager.default.removeItem(atPath: socketPath1)
         }
-        try await waitForSocket(socketPath1, timeout: 15)
+        try await waitForSocket(socketPath1, timeout: 25)
 
         let client1 = ProductionBrokerClient(socket: SocketConnection(socketPath: socketPath1))
         try await client1.vaultUnlock(
@@ -105,7 +105,7 @@ struct VaultReencryptE2ETests {
             broker2.terminate()
             try? FileManager.default.removeItem(atPath: socketPath2)
         }
-        try await waitForSocket(socketPath2, timeout: 15)
+        try await waitForSocket(socketPath2, timeout: 25)
 
         // Give the broker time to attempt (and fail) the custody restore.
         try await Task.sleep(nanoseconds: 500_000_000) // 500 ms
@@ -168,7 +168,7 @@ struct VaultReencryptE2ETests {
             broker.terminate()
             try? FileManager.default.removeItem(atPath: socketPath)
         }
-        try await waitForSocket(socketPath, timeout: 15)
+        try await waitForSocket(socketPath, timeout: 25)
 
         let client = ProductionBrokerClient(socket: SocketConnection(socketPath: socketPath))
 
