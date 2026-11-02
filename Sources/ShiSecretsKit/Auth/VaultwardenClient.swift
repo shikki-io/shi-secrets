@@ -151,6 +151,50 @@ public actor VaultwardenClient {
     /// thing is exactly the confusion that produced a plaintext vault.
     private let vaultKey = VaultSessionKey()
 
+    /// Vault-key custody for persistence (W0 — spec 7c2e9a14).
+    /// Nil in production until wireCustody(_:) is called.
+    /// BR-01: master password is never stored through this path.
+    private var custody: (any VaultKeyCustody)?
+
+    // MARK: - Lock reason / custody backend (spec 7c2e9a14 W4, BR-07, BR-08)
+
+    /// Human-readable reason why the vault is locked. Nil when unlocked.
+    /// Set by the lock/restore path; cleared on successful unlock.
+    private var _lockReason: String?
+
+    /// The active custody backend description (BR-07). Nil when locked.
+    public var custodyBackend: String? {
+        get async {
+            guard await vaultKey.isUnlocked else { return nil }
+            return custody?.custodyDescription
+        }
+    }
+
+    /// The current lock reason. Nil when unlocked or reason unknown.
+    public var lockReason: String? { _lockReason }
+
+    /// Record (or clear) the reason the vault is locked.
+    /// Cleared to nil when unlock() succeeds.
+    public func setLockReason(_ reason: String?) {
+        _lockReason = reason
+    }
+
+    /// Inject a custody backend. Called by DryRunBootstrap (W0) and
+    /// production Bootstrap (W1). Safe to call before or after unlock.
+    public func wireCustody(_ custody: any VaultKeyCustody) {
+        self.custody = custody
+    }
+
+    /// Try to restore the vault key from the custody backend.
+    /// Returns silently if no key is stored. Throws on I/O or malformed data.
+    /// Called during broker startup so a rebooted machine can skip the
+    /// master-password prompt (BR-04).
+    public func restoreFromCustody() async throws {
+        guard let c = custody else { return }
+        guard let keys = try await c.load() else { return }
+        await vaultKey.unlock(with: keys)
+    }
+
     /// Everything the server told us at token time, kept so `unlock` does not
     /// have to make a second round trip.
     private var accountProtectedKey: String?
@@ -451,6 +495,14 @@ public actor VaultwardenClient {
             parameters: parameters, protectedKey: protectedKey
         )
         await vaultKey.unlock(with: keys)
+        // BR-04: persist the derived key for cross-restart restoration.
+        // Non-fatal: if the custody store fails, the vault stays unlocked
+        // in memory only (better than refusing the unlock entirely).
+        if let c = custody {
+            try? await c.store(keys)
+        }
+        // Clear lock reason on successful unlock (BR-07/BR-08).
+        _lockReason = nil
     }
 
     /// Install a key derived elsewhere — used by the broker, which unlocks
@@ -460,9 +512,23 @@ public actor VaultwardenClient {
         await vaultKey.unlock(with: keys)
     }
 
-    /// Drop the vault key. The access token survives; the data does not open.
+    /// Drop the vault key from memory AND from the custody store (BR-06).
+    /// Called by `vault.lock` wire verb and `shi secrets lock`.
+    /// The access token survives; the data does not open.
     public func lockVault() async {
         await vaultKey.lock()
+        if let c = custody {
+            try? await c.clear()
+        }
+    }
+
+    /// Drop the vault key from memory ONLY — custody store is preserved (BR-03).
+    /// Called by the device-lock path so that unlock can restore the key
+    /// from the custody file without a master-password prompt (BR-04).
+    /// The access token survives; the data does not open.
+    public func lockVaultMemoryOnly() async {
+        await vaultKey.lock()
+        // custody store intentionally NOT cleared — BR-04 restore requires it.
     }
 
     // MARK: - fetchSecret(id:)

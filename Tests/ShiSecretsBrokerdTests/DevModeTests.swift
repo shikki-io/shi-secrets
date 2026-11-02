@@ -136,4 +136,11 @@ final class DevModeTests: XCTestCase {
     func test_T9_default_seed_is_safe() throws {
         try DevModeSafety.assertSeedSafe(DevModeConfig.defaultSeed)
     }
+
+    /// dev-mode and dry-run never consult the real Keychain; production does.
+    func test_isolatedModesSkipRealKeychain() {
+        XCTAssertTrue(DevModeArgs.parse(["--dev-mode"]).isIsolatedFromRealKeychain)
+        XCTAssertTrue(DevModeArgs.parse(["--dry-run"]).isIsolatedFromRealKeychain)
+        XCTAssertFalse(DevModeArgs.parse([]).isIsolatedFromRealKeychain)
+    }
 }

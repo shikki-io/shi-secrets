@@ -242,6 +242,11 @@ final class FakeVaultwardenServer: @unchecked Sendable {
         ciphers.delete(":id") { req async throws -> Response in
             try capturedSelf.handleDeleteCipher(id: req.parameters.require("id"))
         }
+
+        // PUT /api/ciphers/:id — used by VaultwardenClient.reEncryptLegacyPlaintext (BR-10)
+        ciphers.put(":id") { req async throws -> Response in
+            try await capturedSelf.handlePutCipher(req, id: req.parameters.require("id"))
+        }
     }
 
     // MARK: - Route handlers
@@ -334,6 +339,50 @@ final class FakeVaultwardenServer: @unchecked Sendable {
         return try Self.makeJSONResponse(
             VWCipherItemResponse(id: row.id, name: row.encName, notes: row.encNotes)
         )
+    }
+
+    /// Seed a plaintext cipher directly into the server's state — bypasses the normal
+    /// create path (which always receives encrypted content from the client).
+    /// Used in T-07 to simulate legacy pre-encryption entries (BR-10).
+    func seedPlaintextCipher(name: String, notes: String) -> String {
+        let id = UUID().uuidString
+        stateLock.withLock {
+            _ciphers[id] = CipherRow(id: id, encName: name, encNotes: notes)
+        }
+        return id
+    }
+
+    private func handlePutCipher(_ req: Request, id: String) async throws -> Response {
+        let maybeBuffer = try await req.body.collect(max: 65_536).get()
+        guard let buffer = maybeBuffer else {
+            return try Self.makeJSONResponse(
+                VWErrorBody(error: "empty_body", error_description: nil),
+                status: .badRequest
+            )
+        }
+        let data = buffer.getData(at: buffer.readerIndex, length: buffer.readableBytes) ?? Data()
+        let body: VWCipherCreateRequest
+        do {
+            body = try JSONDecoder().decode(VWCipherCreateRequest.self, from: data)
+        } catch {
+            return try Self.makeJSONResponse(
+                VWErrorBody(error: "invalid_body", error_description: nil),
+                status: .badRequest
+            )
+        }
+        // Update in place if the cipher exists, else 404.
+        let updated = stateLock.withLock { () -> Bool in
+            guard _ciphers[id] != nil else { return false }
+            _ciphers[id] = CipherRow(id: id, encName: body.name, encNotes: body.notes)
+            return true
+        }
+        guard updated else {
+            return try Self.makeJSONResponse(
+                VWErrorBody(error: "cipher_not_found", error_description: nil),
+                status: .notFound
+            )
+        }
+        return try Self.makeJSONResponse(VWCipherCreateResponse(id: id, name: body.name))
     }
 
     private func handleDeleteCipher(id: String) throws -> Response {

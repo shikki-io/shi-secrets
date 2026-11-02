@@ -32,10 +32,26 @@ actor VaultwardenTokenCache {
 
     // MARK: - Keychain coordinates
 
-    /// Keychain service name. Canonical per operator decision 2026-06-24T1415Z:
-    ///   `io.shikki.*` product domain (shikki.io), NOT `eu.fj-studios.shikki.*`.
-    let keychainService = "io.shikki.vault.token"
-    let keychainAccount = "client-credentials-access-token"
+    /// Canonical service: `io.shikki.vault-key` — consolidates all dynamic
+    /// per-session data (token + vault session key) under one service.
+    /// Uses kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly in the standard
+    /// login keychain (KeychainSecureStore); no keychain-access-groups entitlement
+    /// required — a team-signed binary prompts at most once per service.
+    ///
+    /// One-time carry-over (readToken()): migrates from every prior service in
+    /// order of recency, writes to canonical, deletes the old item.
+    ///   1. io.shikki.vault / access-token          (W4 — this spec, prior commit)
+    ///   2. io.shikki.vault.token / client-credentials-access-token  (legacy)
+    let keychainService = "io.shikki.vault-key"
+    let keychainAccount = "access-token"
+
+    /// Legacy coordinate set 1 — W4 canonical (introduced and now superseded).
+    private let legacyService1 = "io.shikki.vault"
+    private let legacyAccount1 = "access-token"
+
+    /// Legacy coordinate set 2 — original (pre-W4).
+    private let legacyService2 = "io.shikki.vault.token"
+    private let legacyAccount2 = "client-credentials-access-token"
 
     // MARK: - Token entry (Keychain half)
 
@@ -98,8 +114,28 @@ actor VaultwardenTokenCache {
     /// entries written before W6.5 have `nil` and are accepted (caller decides
     /// whether to enforce fingerprint binding).
     func readToken() async throws -> TokenEntry? {
-        guard let data = try await store.read(service: keychainService,
-                                              account: keychainAccount) else {
+        var data: Data?
+        data = try await store.read(service: keychainService, account: keychainAccount)
+        if data == nil {
+            // One-time carry-over: try legacy services in order of recency,
+            // copy first found item to canonical location, delete old entry.
+            let legacyPairs: [(service: String, account: String)] = [
+                (legacyService1, legacyAccount1),  // io.shikki.vault / access-token (W4)
+                (legacyService2, legacyAccount2),  // io.shikki.vault.token / client-credentials-access-token
+            ]
+            for pair in legacyPairs {
+                if let legacyData = try? await store.read(
+                    service: pair.service, account: pair.account
+                ) {
+                    logger.info("[token-cache] migrating token from \(pair.service)/\(pair.account) → \(keychainService)/\(keychainAccount)")
+                    try? await store.write(legacyData, service: keychainService, account: keychainAccount)
+                    try? await store.delete(service: pair.service, account: pair.account)
+                    data = legacyData
+                    break
+                }
+            }
+        }
+        guard let data else {
             logger.debug("[token-cache] cache miss — no Keychain entry")
             return nil
         }

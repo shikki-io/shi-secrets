@@ -98,7 +98,7 @@ struct KeychainStorageTests {
         #expect(loaded.clientID == creds.clientID)
     }
 
-    // MARK: - BR-SM-02: Accessibility
+    // MARK: - BR-SM-02: Accessibility (integration — needs SHIKKI_TEST_KEYCHAIN=1)
 
     @Test("SM-02: Keychain accessibility — AfterFirstUnlockThisDeviceOnly configured")
     func accessibilityAfterFirstUnlock() throws {
@@ -122,21 +122,6 @@ struct KeychainStorageTests {
         }
         let loaded = try kc.load()
         #expect(!loaded.clientID.isEmpty)
-    }
-
-    @Test("SM-02: Keychain — kSecAttrAccessibleAlways is NOT used (forbidden)")
-    func alwaysAccessibleForbidden() {
-        // Structural test: KeychainVaultCredentials MUST NOT use
-        // kSecAttrAccessibleAlways or kSecAttrAccessibleAlwaysThisDeviceOnly.
-        // Verified by code review of KeychainVaultCredentials.store()
-        // in the Auth/ directory. This test documents the contract.
-        //
-        // If the implementation ever regresses to kSecAttrAccessibleAlways,
-        // the Security framework will still allow it (it's not an error) —
-        // so we enforce this via CI code-grep rule, not a runtime assertion.
-        // The grep rule is: grep -r "kSecAttrAccessibleAlways[^T]" packages/ShiSecrets
-        // should return zero matches.
-        #expect(Bool(true), "Accessibility policy enforced via code review + CI grep")
     }
 
     // MARK: - BR-SM-03: Apple Silicon Secure Enclave
@@ -163,6 +148,35 @@ struct KeychainStorageTests {
         #expect(loaded.clientSecret == creds.clientSecret)
     }
 
+}
+
+// MARK: - BR-SM-02/04/05 Structural assertions (no Keychain I/O — always run)
+//
+// These tests document invariants via code inspection only. They MUST NOT be
+// gated behind SHIKKI_TEST_KEYCHAIN=1 because they never call SecItemAdd /
+// SecItemCopyMatching — the gate exists solely to avoid blocking on the macOS
+// Keychain authorization dialog. Moving them here keeps them green in every CI
+// environment without requiring the opt-in env var.
+@Suite("KeychainStorageStructuralTests")
+struct KeychainStorageStructuralTests {
+
+    // MARK: - BR-SM-02: kSecAttrAccessibleAlways is forbidden
+
+    @Test("SM-02: Keychain — kSecAttrAccessibleAlways is NOT used (forbidden)")
+    func alwaysAccessibleForbidden() {
+        // Structural test: KeychainVaultCredentials MUST NOT use
+        // kSecAttrAccessibleAlways or kSecAttrAccessibleAlwaysThisDeviceOnly.
+        // Verified by code review of KeychainVaultCredentials.store()
+        // in the Auth/ directory. This test documents the contract.
+        //
+        // If the implementation ever regresses to kSecAttrAccessibleAlways,
+        // the Security framework will still allow it (it's not an error) —
+        // so we enforce this via CI code-grep rule, not a runtime assertion.
+        // The grep rule is: grep -r "kSecAttrAccessibleAlways[^T]" packages/ShiSecrets
+        // should return zero matches.
+        #expect(Bool(true), "Accessibility policy enforced via code review + CI grep")
+    }
+
     // MARK: - BR-SM-04: No BW_SESSION env var in broker process env
 
     @Test("SM-04: Broker process env — BW_SESSION not queried")
@@ -181,7 +195,10 @@ struct KeychainStorageTests {
         // has no ProcessInfo dependency.
         // Adversarial variant: test_adversarial_envVarBWSession_set_brokerDoesNotUseIt
         // lives in AdversarialTests.swift.
-        let kc = makeKC()
+        let kc = KeychainVaultCredentials(
+            service: "test.shi.structural.\(UUID().uuidString)",
+            account: "structural-check"
+        )
         // We cannot set a process env var and verify it's not used here,
         // but the structural absence of ProcessInfo in load() is sufficient.
         _ = kc  // reference to confirm the type compiles with no env-var dep

@@ -95,6 +95,36 @@ public protocol BWClient: BWClientWriteBack, Sendable {
     /// True once unlock(masterPassword:email:) has succeeded and the
     /// derived key is held in memory.
     var isVaultUnlocked: Bool { get async }
+
+    // MARK: - Vault lock (spec 7c2e9a14 W0, BR-06)
+
+    /// Drop the vault key from memory AND from the custody store (BR-06).
+    /// After this call, isVaultUnlocked is false and the operator must
+    /// re-type the master password to re-unlock.
+    func lock() async throws
+
+    /// Drop the vault key from memory ONLY — custody store preserved (BR-03).
+    /// Used by the device-lock path so unlock can restore the key from
+    /// custody without a master-password prompt (BR-04).
+    func lockMemoryOnly() async throws
+
+    // MARK: - Status (spec 7c2e9a14 W4, BR-07, BR-08)
+
+    /// Human-readable reason the vault is locked (nil when unlocked). BR-07/BR-08.
+    var lockReason: String? { get async }
+
+    /// Description of the active custody backend (nil when locked). BR-07.
+    var custodyBackend: String? { get async }
+
+    // MARK: - Re-encryption (spec 7c2e9a14 W4, BR-10)
+
+    /// Scan the vault for legacy plaintext ciphers, re-encrypt each one with
+    /// the current vault session key, and return a summary (BR-10).
+    ///
+    /// `dryRun=true` (the default) reports what would be done without writing.
+    /// `dryRun=false` writes each plaintext cipher back as an EncString.
+    /// Throws VaultReencryptError.partialFailure if any single item fails.
+    func reEncryptLegacyPlaintext(dryRun: Bool) async throws -> VaultReencryptResult
 }
 
 // MARK: - InMemoryBWClient (fake / default DEBUG + test binding)
@@ -197,6 +227,27 @@ public actor InMemoryBWClient: BWClient {
 
     /// Whether the in-memory vault is unlocked.
     public var isVaultUnlocked: Bool { _vaultUnlocked }
+
+    /// BR-06: drop the vault key. In-memory only (no custody in test double).
+    public func lock() async throws {
+        _vaultUnlocked = false
+    }
+
+    /// BR-03: device-lock path — same as lock() for in-memory (no custody to preserve).
+    public func lockMemoryOnly() async throws {
+        _vaultUnlocked = false
+    }
+
+    /// lockReason: always nil for in-memory (no custody tracking).
+    public var lockReason: String? { nil }
+
+    /// reEncryptLegacyPlaintext: no-op for in-memory vault (no Vaultwarden ciphers to scan).
+    public func reEncryptLegacyPlaintext(dryRun: Bool) async throws -> VaultReencryptResult {
+        return VaultReencryptResult(count: 0, failures: [:])
+    }
+
+    /// custodyBackend: always nil for in-memory (no custody).
+    public var custodyBackend: String? { nil }
 }
 
 // MARK: - ProductionBWClient (W3 — full read+write VaultwardenClient-backed)
@@ -303,7 +354,7 @@ public actor ProductionBWClient: BWClient {
     /// Monotonically bumped by `invalidateSession` (review finding U5).
     public var sessionEpoch: UInt64 { _sessionEpoch }
 
-    // MARK: - Vault unlock (feat/vault-unlock-2026-11-01)
+    // MARK: - Vault unlock / lock (feat/vault-unlock + spec 7c2e9a14 W0)
 
     /// Derive the vault session key. Delegates to VaultwardenClient.unlock.
     /// Requires that wire(client:) has already been called (i.e. the broker
@@ -322,5 +373,69 @@ public actor ProductionBWClient: BWClient {
             guard let vc = vaultClient else { return false }
             return await vc.isVaultUnlocked
         }
+    }
+
+    /// BR-06: drop the vault key from memory AND from the custody store.
+    public func lock() async throws {
+        guard let vc = vaultClient else { return }
+        await vc.lockVault()
+    }
+
+    /// BR-03: device-lock path — drop the vault key from memory ONLY.
+    /// Custody file is preserved so device-unlock can restore without a password (BR-04).
+    public func lockMemoryOnly() async throws {
+        guard let vc = vaultClient else { return }
+        await vc.lockVaultMemoryOnly()
+    }
+
+    // MARK: - Custody wiring (spec 7c2e9a14 W0)
+
+    /// Inject a custody backend into the underlying VaultwardenClient.
+    /// Must be called before the first unlock() for persistence to take effect.
+    public func wireCustody(_ custody: any VaultKeyCustody) async {
+        guard let vc = vaultClient else { return }
+        await vc.wireCustody(custody)
+    }
+
+    /// Try to restore the vault key from the custody backend without the
+    /// master password (BR-04). No-op if no key is stored.
+    /// On error, sets lockReason on the VaultwardenClient (BR-08, BR-09).
+    public func restorePersistedKey() async {
+        guard let vc = vaultClient else { return }
+        do {
+            try await vc.restoreFromCustody()
+        } catch {
+            // BR-08: a failed store read reports locked with reason.
+            await vc.setLockReason(
+                "stored key no longer decrypts — run `shi secrets unlock`"
+            )
+        }
+    }
+
+    // MARK: - Status (spec 7c2e9a14 W4, BR-07, BR-08)
+
+    /// lockReason: human-readable reason the vault is locked (nil when unlocked).
+    public var lockReason: String? {
+        get async {
+            guard let vc = vaultClient else { return nil }
+            return await vc.lockReason
+        }
+    }
+
+    /// custodyBackend: description of the active custody backend (nil when locked).
+    public var custodyBackend: String? {
+        get async {
+            guard let vc = vaultClient else { return nil }
+            return await vc.custodyBackend
+        }
+    }
+
+    /// reEncryptLegacyPlaintext: delegates to VaultwardenClient.reEncryptLegacyPlaintext (BR-10).
+    public func reEncryptLegacyPlaintext(dryRun: Bool) async throws -> VaultReencryptResult {
+        guard let vc = vaultClient else {
+            throw VaultReencryptError.notWired
+        }
+        let report = try await vc.reEncryptLegacyPlaintext(dryRun: dryRun)
+        return VaultReencryptResult(count: report.rewritten, failures: report.failures)
     }
 }

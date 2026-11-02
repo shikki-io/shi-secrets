@@ -144,8 +144,9 @@ struct TokenCacheHTTPTests {
         try await cache.recordSuccess(token: fresh.accessToken, ttl: fresh.expiresAt.timeIntervalSinceNow)
 
         #expect(httpCallCount == 1, "Expected exactly 1 Vault call")
-        let stored = await store.rawRead(service: "io.shikki.vault.token",
-                                         account: "client-credentials-access-token")
+        // Canonical service/account after io.shikki.vault-key consolidation (spec 7c2e9a14).
+        let stored = await store.rawRead(service: "io.shikki.vault-key",
+                                         account: "access-token")
         #expect(stored != nil, "Token must be written to store")
 
         let cachedEntry = try await cache.readToken()

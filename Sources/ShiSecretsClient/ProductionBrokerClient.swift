@@ -137,12 +137,49 @@ public actor ProductionBrokerClient: BrokerClient {
     }
 
     /// Query locked/unlocked state from the broker (vault.status).
+    /// BR-07: returns locked flag plus optional reason (BR-08) and backend (BR-07).
     public func vaultStatus() async throws -> VaultStatus {
         let result = try await call(method: "vault.status", params: .object([:]))
         guard case let .object(obj) = result, case let .bool(locked) = obj["locked"] else {
             throw BrokerClientError.wireDecodeFailed("vault.status expected {locked: Bool}")
         }
-        return VaultStatus(locked: locked)
+        var reason: String?
+        var backend: String?
+        if case let .string(r) = obj["reason"] { reason = r }
+        if case let .string(b) = obj["backend"] { backend = b }
+        return VaultStatus(locked: locked, reason: reason, backend: backend)
+    }
+
+    /// Drop the vault key from memory and custody store (vault.lock).
+    public func vaultLock() async throws {
+        _ = try await call(method: "vault.lock", params: .object([:]))
+    }
+
+    /// Fire a simulated device-lock event (--dry-run only). spec 7c2e9a14 W2.
+    public func simulateDeviceLock() async throws {
+        _ = try await call(method: "vault.simulate.device_lock", params: .object([:]))
+    }
+
+    /// Fire a simulated device-unlock event (--dry-run only). spec 7c2e9a14 W2.
+    public func simulateDeviceUnlock() async throws {
+        _ = try await call(method: "vault.simulate.device_unlock", params: .object([:]))
+    }
+
+    /// Re-encrypt legacy plaintext vault entries in place (vault.reencrypt, BR-10).
+    public func vaultReencrypt() async throws -> VaultReencryptResult {
+        let result = try await call(method: "vault.reencrypt", params: .object([:]))
+        guard case let .object(obj) = result,
+              case let .int(count) = obj["count"] else {
+            throw BrokerClientError.wireDecodeFailed("vault.reencrypt expected {count: Int}")
+        }
+        // failures is optional — omitted when empty.
+        var failures: [String: String] = [:]
+        if case let .object(failObj) = obj["failures"] {
+            for (k, v) in failObj {
+                if case let .string(reason) = v { failures[k] = reason }
+            }
+        }
+        return VaultReencryptResult(count: Int(count), failures: failures)
     }
 
     // MARK: - Internals

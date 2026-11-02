@@ -90,10 +90,17 @@ struct BWClientRaceTests {
             _sessionEpoch &+= 1
         }
 
-        // Vault unlock stubs — RacingBWClient exercises the mint-vs-invalidate
-        // race only; vault unlock is not exercised here.
+        // Vault unlock / lock stubs — RacingBWClient exercises the
+        // mint-vs-invalidate race only; vault operations are not exercised here.
         func unlock(masterPassword: String, email: String) async throws {}
         var isVaultUnlocked: Bool { false }
+        func lock() async throws {}
+        func lockMemoryOnly() async throws {}
+        var lockReason: String? { nil }
+        var custodyBackend: String? { nil }
+        func reEncryptLegacyPlaintext(dryRun: Bool) async throws -> VaultReencryptResult {
+            VaultReencryptResult(count: 0, failures: [:])
+        }
     }
 
     @Test("bw invalidate between prepare and persist → .deny(.brokerSessionInvalid) + compensateRevoke seam (T2)")

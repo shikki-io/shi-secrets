@@ -60,6 +60,22 @@ public actor BrokerWireDispatcher {
         case "vault.status":
             return await dispatchVaultStatus(request, peerUid: peerUid)
 
+        // spec 7c2e9a14 W0 — vault.lock drops key from memory + custody (BR-06).
+        case "vault.lock":
+            return await dispatchVaultLock(request, peerUid: peerUid)
+
+        // spec 7c2e9a14 W4 — vault.reencrypt lists plaintext entries, returns count (BR-10).
+        case "vault.reencrypt":
+            return await dispatchVaultReencrypt(request, peerUid: peerUid)
+
+        // spec 7c2e9a14 W2 — test-only simulation verbs (dev/dry-run mode).
+        // These are NEVER accessible in production (denied when simulationLockSource is nil).
+        case "vault.simulate.device_lock":
+            return await dispatchSimulateDeviceLock(request, peerUid: peerUid)
+
+        case "vault.simulate.device_unlock":
+            return await dispatchSimulateDeviceUnlock(request, peerUid: peerUid)
+
         // Phase 0.5+: token.{revoke, revokeAllBots, revokeAllBotsSigned}.
         // Phase 0.6+: audit.{blastRadius, recent, seams}.
         default:
@@ -472,6 +488,59 @@ public actor BrokerWireDispatcher {
         }
     }
 
+    // MARK: - vault.lock (spec 7c2e9a14 W0, BR-06)
+
+    /// Drop the vault key from memory and custody. Only the owner may lock.
+    ///
+    /// Wire params: none.
+    /// Wire result on success: `{ "ok": true }`
+    private func dispatchVaultLock(_ request: WireRequest, peerUid: UInt32) async -> WireResponse {
+        if let denied = await requireOwner(request, peerUid: peerUid) { return denied }
+        do {
+            try await daemon.bwClient.lock()
+            return WireResponse(id: request.id, result: .object(["ok": .bool(true)]))
+        } catch {
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.internalError,
+                message: "vault.lock failed: \(error)"
+            ))
+        }
+    }
+
+    // MARK: - vault.simulate.device_lock / vault.simulate.device_unlock (spec 7c2e9a14 W2)
+
+    /// Fire a simulated screen-lock event. Only available when a
+    /// ManualDeviceLockSignalSource was wired (--dry-run mode). In production
+    /// this verb is denied because simulationLockSource is nil.
+    private func dispatchSimulateDeviceLock(_ request: WireRequest, peerUid: UInt32) async -> WireResponse {
+        if let denied = await requireOwner(request, peerUid: peerUid) { return denied }
+        guard let src = await daemon.simulationLockSource else {
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.denied,
+                message: "vault.simulate.device_lock: not available in production mode"
+            ))
+        }
+        src.fireLock()
+        // The lock propagates asynchronously (DeviceLockObserver fires an
+        // unstructured Task). Callers poll vault.status for up to 2 s per BR-03.
+        return WireResponse(id: request.id, result: .object(["ok": .bool(true)]))
+    }
+
+    /// Fire a simulated screen-unlock event. Only available in --dry-run mode.
+    private func dispatchSimulateDeviceUnlock(_ request: WireRequest, peerUid: UInt32) async -> WireResponse {
+        if let denied = await requireOwner(request, peerUid: peerUid) { return denied }
+        guard let src = await daemon.simulationLockSource else {
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.denied,
+                message: "vault.simulate.device_unlock: not available in production mode"
+            ))
+        }
+        src.fireUnlock()
+        // The unlock propagates asynchronously (DeviceLockObserver fires an
+        // unstructured Task). Callers poll vault.status for up to 3 s per BR-04.
+        return WireResponse(id: request.id, result: .object(["ok": .bool(true)]))
+    }
+
     // MARK: - vault.status (feat/vault-unlock-2026-11-01)
 
     /// Reports the current locked/unlocked state. Safe to call without
@@ -481,7 +550,41 @@ public actor BrokerWireDispatcher {
     /// Wire result: `{ "locked": Bool }`
     private func dispatchVaultStatus(_ request: WireRequest, peerUid: UInt32) async -> WireResponse {
         let unlocked = await daemon.bwClient.isVaultUnlocked
-        return WireResponse(id: request.id, result: .object(["locked": .bool(!unlocked)]))
+        let reason  = await daemon.bwClient.lockReason
+        let backend = await daemon.bwClient.custodyBackend
+        var result: [String: JSONValue] = ["locked": .bool(!unlocked)]
+        if let reason  { result["reason"]  = .string(reason) }
+        if let backend { result["backend"] = .string(backend) }
+        return WireResponse(id: request.id, result: .object(result))
+    }
+
+    /// Re-encrypt legacy plaintext vault ciphers in place and return a count (BR-10).
+    /// Reads each cipher via GET /api/ciphers, detects plaintext by the absence
+    /// of the EncString "2." prefix, encrypts with the current vault session key,
+    /// and writes back via PUT /api/ciphers/{id}.
+    /// Non-zero exit (WireErrorCode.internalError) when any item fails.
+    private func dispatchVaultReencrypt(_ request: WireRequest, peerUid: UInt32) async -> WireResponse {
+        if let denied = await requireOwner(request, peerUid: peerUid) { return denied }
+        do {
+            let result = try await daemon.bwClient.reEncryptLegacyPlaintext(dryRun: false)
+            if !result.failures.isEmpty {
+                // BR-10: non-zero exit on any failure — surface as internalError so
+                // the CLI can exit non-zero and name the affected items.
+                let names = result.failures.keys.sorted().joined(separator: ", ")
+                return WireResponse(id: request.id, error: WireError(
+                    code: WireErrorCode.internalError,
+                    message: "vault.reencrypt partial failure (\(result.failures.count) item(s)): \(names)"
+                ))
+            }
+            return WireResponse(id: request.id, result: .object([
+                "count": .int(Int64(result.count)),
+            ]))
+        } catch {
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.internalError,
+                message: "vault.reencrypt failed: \(error)"
+            ))
+        }
     }
 
     // MARK: - Helpers

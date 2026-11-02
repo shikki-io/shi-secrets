@@ -207,3 +207,53 @@ struct VaultStatusRPCDispatchTests {
         #expect(obj["locked"] != nil, "vault.status must include locked field for any caller")
     }
 }
+
+// MARK: - vault.simulate.device_lock / vault.simulate.device_unlock production denial
+
+/// spec 7c2e9a14 W2: simulation verbs must be denied in production (no simulationLockSource).
+/// This suite uses the same makeDispatcher() helper, which wires no simulationSource.
+@Suite("VaultSimulateProductionDenialTests")
+struct VaultSimulateProductionDenialTests {
+
+    @Test("vault.simulate.device_lock is denied in production (no simulationSource)")
+    func test_simulateDeviceLock_deniedInProduction() async throws {
+        let (dispatcher, _, socket) = try await makeDispatcher()
+        defer { Task { await socket.shutdown() } }
+
+        let request = WireRequest(method: "vault.simulate.device_lock", params: nil, id: "sim-lock-1")
+        let response = await dispatcher.dispatch(request, peerUid: UInt32(geteuid()))
+
+        #expect(response.id == "sim-lock-1")
+        #expect(response.result == nil, "simulation verb must not succeed in production")
+        #expect(
+            response.error?.code == WireErrorCode.denied,
+            "simulation verb must return WireErrorCode.denied in production, got \(String(describing: response.error?.code))"
+        )
+        let msg = response.error?.message ?? ""
+        #expect(
+            msg.contains("not available in production"),
+            "error message must say 'not available in production', got: \(msg)"
+        )
+    }
+
+    @Test("vault.simulate.device_unlock is denied in production (no simulationSource)")
+    func test_simulateDeviceUnlock_deniedInProduction() async throws {
+        let (dispatcher, _, socket) = try await makeDispatcher()
+        defer { Task { await socket.shutdown() } }
+
+        let request = WireRequest(method: "vault.simulate.device_unlock", params: nil, id: "sim-unlock-1")
+        let response = await dispatcher.dispatch(request, peerUid: UInt32(geteuid()))
+
+        #expect(response.id == "sim-unlock-1")
+        #expect(response.result == nil, "simulation verb must not succeed in production")
+        #expect(
+            response.error?.code == WireErrorCode.denied,
+            "simulation verb must return WireErrorCode.denied in production, got \(String(describing: response.error?.code))"
+        )
+        let msg = response.error?.message ?? ""
+        #expect(
+            msg.contains("not available in production"),
+            "error message must say 'not available in production', got: \(msg)"
+        )
+    }
+}

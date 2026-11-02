@@ -161,6 +161,11 @@ public struct DevModeArgs: Sendable, Equatable {
     public var dryRun: Bool
     public var socketPath: String?
 
+    /// True for --dev-mode / --dry-run: the daemon runs on seeded in-memory
+    /// state and must never read the operator's real login Keychain (a
+    /// legacy-keychain read blocks on an ACL prompt and the socket never binds).
+    public var isIsolatedFromRealKeychain: Bool { enabled || dryRun }
+
     public static func parse(_ args: [String]) -> DevModeArgs {
         var enabled = false
         var dryRun  = false
@@ -242,6 +247,21 @@ public struct DryRunBootstrap: Sendable {
         )
         let bw = ProductionBWClient()
         await bw.wire(client: vaultClient)
+
+        // spec 7c2e9a14 W0: file-backed custody for E2E tests.
+        // SHIKKI_E2E_CUSTODY_FILE — path to the vault key file.
+        // If present, wire the custody and try to restore a persisted key
+        // so that a restarted broker in a multi-launch test scenario
+        // can skip the master-password prompt (BR-04).
+        if let custodyPath = env["SHIKKI_E2E_CUSTODY_FILE"], !custodyPath.isEmpty {
+            let custody = FileBackedVaultKeyCustody(
+                fileURL: URL(fileURLWithPath: custodyPath)
+            )
+            await bw.wireCustody(custody)
+            // Non-fatal: if no key file exists yet, restorePersistedKey is a no-op.
+            await bw.restorePersistedKey()
+        }
+
         let signingKey = BrokerSigningKey(privateKey: Curve25519.Signing.PrivateKey())
         return (bw, signingKey)
     }

@@ -147,6 +147,12 @@ public struct ShiSecretsModule: DIModule {
             return AdminActionVerifier(pinnedPublicKey: keys.daimyoAdmin)
         }
 
+        // --- Keychain seam (production = Security framework; tests register an
+        // in-memory store on their own container, so they never reach the real one).
+        #if canImport(Security) && (os(macOS) || os(iOS) || os(tvOS) || os(watchOS))
+        c.registerLazy((any KeychainStore).self) { SystemKeychainStore() }
+        #endif
+
         // --- Seal the key-bearing resolvers until Bootstrap unseals them.
         c.markSealed(BrokerSigningKey.self)
         c.markSealed(PinnedKeys.self)

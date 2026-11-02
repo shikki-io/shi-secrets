@@ -34,18 +34,44 @@ public protocol BrokerClient: Sendable {
     func recentAudit(hours: Int) async throws -> [AuditRow]
     func seamsRows() async throws -> [SeamsWriter.Row]
 
-    // MARK: - vault.* (feat/vault-unlock-2026-11-01)
+    // MARK: - vault.* (feat/vault-unlock-2026-11-01 + spec 7c2e9a14 W0)
     /// Derive the vault session key from the master password. Never stored.
     func vaultUnlock(masterPassword: String, email: String) async throws
     /// Query the daemon's locked/unlocked state (no secret material returned).
     func vaultStatus() async throws -> VaultStatus
+    /// Drop the vault key from memory and custody store (BR-06).
+    func vaultLock() async throws
+
+    // MARK: - Simulation (spec 7c2e9a14 W2, --dry-run / test only)
+
+    /// Fire a simulated screen-lock event. Only works against a --dry-run broker.
+    /// In production the daemon returns a "denied" error.
+    func simulateDeviceLock() async throws
+    /// Fire a simulated screen-unlock event. Only works against a --dry-run broker.
+    func simulateDeviceUnlock() async throws
+
+    // MARK: - Re-encryption (spec 7c2e9a14 W4, BR-10)
+
+    /// List plaintext vault entries and return their count.
+    /// Does not re-encrypt values — flags them for operator rotation.
+    func vaultReencrypt() async throws -> VaultReencryptResult
 }
 
 /// Result from vault.status. True means locked; data operations will fail.
+/// reason and backend are present when the broker surfaces BR-07/BR-08 context.
 public struct VaultStatus: Sendable, Equatable {
     public let locked: Bool
-    public init(locked: Bool) { self.locked = locked }
+    public let reason: String?
+    public let backend: String?
+    public init(locked: Bool, reason: String? = nil, backend: String? = nil) {
+        self.locked = locked
+        self.reason = reason
+        self.backend = backend
+    }
 }
+
+// VaultReencryptResult is declared in ShiSecretsKit/Auth/VaultReencryptor.swift
+// so ShiSecretsBrokerd (which imports ShiSecretsKit) can also reference it.
 
 // MARK: - Result types
 

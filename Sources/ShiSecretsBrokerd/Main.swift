@@ -174,6 +174,21 @@ struct BrokerMain {
             }
             let prod = ProductionBWClient()
             await prod.wire(client: prodVault)
+            // spec 7c2e9a14 W1/W4: wire AppleKeychainCustody (BR-02) and attempt
+            // a silent key restore so a process restart after a clean unlock
+            // does not require a master-password re-entry (BR-04).
+            // AppleKeychainCustody.checkAvailability() throws dataProtectionUnavailable
+            // if the binary lacks keychain-access-groups — wireCustody is no-op in that
+            // case (key stays memory-only, not a fatal error at startup).
+            // The Keychain seam comes from the DI container (ShiSecretsModule
+            // registers the Security-framework store); custody never builds it.
+            let keychainContainer = DIContainer()
+            ShiSecretsModule().register(into: keychainContainer)
+            let keychainCustody = AppleKeychainCustody(
+                keychain: try keychainContainer.resolve((any KeychainStore).self)
+            )
+            await prod.wireCustody(keychainCustody)
+            await prod.restorePersistedKey()
             bwClient = prod
             prodVaultClient = prodVault
             // Resolution order (production):
@@ -245,7 +260,14 @@ struct BrokerMain {
         // path for IO failures + sidecar/Keychain mismatch).
         let systemScopePolicy: ScopePolicy?
         do {
-            systemScopePolicy = try bootstrap.loadSystemScopePolicy()
+            if devArgs.isIsolatedFromRealKeychain {
+                // dev/dry-run: no per-system policy; reading the real Keychain
+                // here blocked the boot before the socket bound.
+                log("shikki-secrets-brokerd: isolated mode — per-system ScopePolicy skipped (real Keychain not consulted)")
+                systemScopePolicy = nil
+            } else {
+                systemScopePolicy = try bootstrap.loadSystemScopePolicy()
+            }
             if let policy = systemScopePolicy {
                 log("shikki-secrets-brokerd: per-system ScopePolicy active for systemName=\(policy.systemName)")
             }
@@ -320,6 +342,23 @@ struct BrokerMain {
             manifestSource: nil,   // standalone: no pre-signed manifest
             devMode: devArgs.enabled || devArgs.dryRun
         )
+
+        // ── 2b. Wire DeviceLockObserver (spec 7c2e9a14 W2) ────────────────
+        // --dry-run: ManualDeviceLockSignalSource (test seam via wire protocol).
+        // --dev-mode: same (no real screen-lock in dev mode).
+        // production: SystemDeviceLockSignalSource (real macOS notifications).
+        let lockSignalSource: any DeviceLockSignalSource
+        let manualLockSource: ManualDeviceLockSignalSource?
+        if devArgs.dryRun || devArgs.enabled {
+            let manual = ManualDeviceLockSignalSource()
+            lockSignalSource = manual
+            manualLockSource = manual
+        } else {
+            lockSignalSource = SystemDeviceLockSignalSource()
+            manualLockSource = nil
+        }
+        let lockObserver = DeviceLockObserver(source: lockSignalSource, bwClient: bwClient)
+        await daemon.wireDeviceLock(lockObserver, simulationSource: manualLockSource)
 
         // ── 3. start() — preflight: socket bind + kernel job registration ─
         do {
