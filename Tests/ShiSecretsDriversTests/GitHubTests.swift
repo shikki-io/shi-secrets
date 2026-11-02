@@ -15,6 +15,7 @@ struct DriverGitHubTests {
             response: DriverHTTPResponse(status: 201, body: payload)
         )
         let bw = RecordingBWClient()
+        await bw.seedGet(name: "GITHUB_ADMIN_TOKEN", fields: ["value": "ghp_fake-admin-token"])
         let driver = DriverGitHub(transport: http, bwClient: bw)
         let entry = makeEntry(vendor: "github", name: "GITHUB_PAT")
 
@@ -41,6 +42,7 @@ struct DriverGitHubTests {
             )
         )
         let bw = RecordingBWClient()
+        await bw.seedGet(name: "GITHUB_ADMIN_TOKEN", fields: ["value": "ghp_fake-admin-token"])
         let driver = DriverGitHub(transport: http, bwClient: bw)
         let entry = makeEntry(vendor: "github", name: "GITHUB_PAT")
 

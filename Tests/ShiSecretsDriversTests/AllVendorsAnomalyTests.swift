@@ -38,11 +38,16 @@ struct AllVendorsAnomalyTests {
                 body: try! JSONSerialization.data(withJSONObject: ["token": "ghp_new"])
             )
         )
+        // Brevo + GitHub require an admin credential resolved from vault.
+        // Seed a fake entry so the driver can resolve it without network access.
+        let bw = RecordingBWClient()
+        await bw.seedGet(name: "BREVO_API_KEY", fields: ["value": "fake-brevo-admin-key"])
+        await bw.seedGet(name: "GITHUB_ADMIN_TOKEN", fields: ["value": "ghp_fake-admin-token"])
         let driver: any SecretRotationDriver = {
             switch vendor {
             case "ovh":    return DriverOVH(mode: .sandbox, transport: http)
-            case "brevo":  return DriverBrevo(transport: http)
-            case "github": return DriverGitHub(transport: http)
+            case "brevo":  return DriverBrevo(transport: http, bwClient: bw)
+            case "github": return DriverGitHub(transport: http, bwClient: bw)
             default:       fatalError("unknown vendor \(vendor)")
             }
         }()

@@ -45,15 +45,13 @@ struct SecretRotateE2ETests {
         // Register a stub driver for vendor "ovh".
         await stack.daemon.drivers.register(E2EStubRotationDriver(vendor: "ovh"))
 
-        // Seed a vault entry in the engine so the dispatcher can look it up.
-        await stack.engine.seed(entry: VaultEntryRef(
+        // Unlock the vault and seed the entry so the dispatcher can resolve it
+        // via bwClient.get() (the production lookup path).
+        try await stack.bwClient.unlock(masterPassword: "e2e-unlock", email: "e2e@test")
+        await stack.bwClient.seedFakeEntry(
             name: "OVH_APP_KEY",
-            scope: "ovh/OVH_APP_KEY",
-            tier: .warm,
-            usageState: .warm,
-            lastRotated: Date(timeIntervalSinceNow: -3600),
-            rotationDue: Date(timeIntervalSinceNow: -60)
-        ))
+            fields: ["scope": "ovh/OVH_APP_KEY", "value": "test-ovh-credential"]
+        )
 
         // Drive the full stack in-process (same pattern as SecretsLifecycleTests).
         let dispatcher = BrokerWireDispatcher(

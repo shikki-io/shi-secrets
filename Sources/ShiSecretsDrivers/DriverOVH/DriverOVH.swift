@@ -48,6 +48,13 @@ public struct DriverOVH: SecretRotationDriver {
     }
 
     public func rotate(entry: VaultEntryRef, trigger: RotationTrigger) async -> RotationOutcome {
+        // OVH production requires HMAC-SHA1 signed requests (X-Ovh-Application +
+        // X-Ovh-Consumer + X-Ovh-Timestamp + X-Ovh-Signature). That signing scheme
+        // is not yet implemented; refuse clearly rather than send an unsigned request
+        // that OVH would reject anyway. Sandbox mode carries no auth requirement.
+        if mode == .production {
+            return .failed(reason: "ovh production_unsupported: HMAC-SHA1 signing not implemented — use .sandbox or the human runbook")
+        }
         let url = baseURL + "/me/api/credential"
         let request = DriverHTTPRequest(
             method: "POST",

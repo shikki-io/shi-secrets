@@ -418,13 +418,45 @@ public actor BrokerWireDispatcher {
             ))
         }
 
-        // Entry must be registered in the engine's in-memory vault registry.
-        guard let entry = await daemon.engine.entry(name: params.name) else {
+        // Vault must be unlocked before any rotation can proceed.
+        let vaultUnlocked = await daemon.bwClient.isVaultUnlocked
+        guard vaultUnlocked else {
             return WireResponse(id: request.id, error: WireError(
-                code: WireErrorCode.invalidParams,
-                message: "secret.rotate: no vault entry registered for '\(params.name)'"
+                code: WireErrorCode.internalError,
+                message: "secret.rotate: vault is locked — run vault.unlock first"
             ))
         }
+
+        // Look up the vault entry via the live BWClient rather than the
+        // in-memory engine registry, so the production path works without
+        // requiring a separate seed step (engine.seed is test-only).
+        let vaultFields: [String: String]
+        do {
+            vaultFields = try await daemon.bwClient.get(name: params.name)
+        } catch {
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.internalError,
+                message: "secret.rotate: vault.get('\(params.name)') threw \(error)"
+            ))
+        }
+        guard !vaultFields.isEmpty else {
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.invalidParams,
+                message: "secret.rotate: no secret named '\(params.name)' in vault"
+            ))
+        }
+        // Build VaultEntryRef from vault fields. The "scope" field identifies
+        // the vendor (e.g. "brevo/BREVO_API_KEY"); fall back to the secret name
+        // when the entry has no explicit scope stored.
+        let scope = vaultFields["scope"] ?? params.name
+        let entry = VaultEntryRef(
+            name: params.name,
+            scope: scope,
+            tier: .warm,
+            usageState: .warm,
+            lastRotated: Date(timeIntervalSince1970: 0),
+            rotationDue: Date()
+        )
 
         // Resolve vendor from scope (e.g. "ovh/OVH_APP_KEY" → "ovh").
         let vendorName = RotationEngine.vendor(from: entry.scope)

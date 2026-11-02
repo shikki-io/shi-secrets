@@ -117,9 +117,10 @@ public struct DriverWoodpecker: SecretRotationDriver {
     // MARK: - SecretRotationDriver
 
     /// Rotates the scoped CI token for this entry:
-    ///   1. Mint a new token (POST /api/user/token)
-    ///   2. Write back to vault via BWClient
-    ///   3. Revoke the previous token (DELETE /api/user/token/:id)
+    ///   1. Resolve WOODPECKER_ADMIN_TOKEN from vault
+    ///   2. Mint a new token (POST /api/user/token) with admin auth
+    ///   3. Write back to vault via BWClient
+    ///   4. Revoke the previous token (DELETE /api/user/token/:id)
     ///
     /// Returns .rotated on success; .failed(reason:) on any transport or
     /// scope error so the rotation engine can log + enqueue retry.
@@ -127,15 +128,29 @@ public struct DriverWoodpecker: SecretRotationDriver {
         guard let parsed = DriverWoodpecker.parseScope(entry.scope) else {
             return .failed(reason: "woodpecker invalid_scope: \(entry.scope)")
         }
+        // Resolve admin token from vault — never plaintext config.
+        guard let bw = bwClient else {
+            return .failed(reason: "woodpecker vault_misconfigured: bwClient not wired — admin token unavailable")
+        }
+        let adminToken: String
         do {
-            let newToken = try await mint(repo: parsed.repo, branch: parsed.branch, ttl: Self.maxTokenTTL)
-            if let bwClient {
-                try await bwClient.update(name: entry.name, fields: ["token": newToken.id, "value": newToken.id])
+            let fields = try await bw.get(name: "WOODPECKER_ADMIN_TOKEN")
+            let candidate = fields["value"] ?? ""
+            guard !candidate.isEmpty else {
+                return .failed(reason: "woodpecker vault_misconfigured: WOODPECKER_ADMIN_TOKEN absent from vault")
             }
-            // Revoke the previous token id stored on the entry name.
-            // The rotation engine will call invalidate(previous:) separately;
-            // for atomic rotate semantics we also issue a best-effort revoke here
-            // so the old credential cannot outlive the mint window.
+            adminToken = candidate
+        } catch {
+            return .failed(reason: "woodpecker vault_misconfigured: get(WOODPECKER_ADMIN_TOKEN) threw \(error)")
+        }
+        do {
+            let newToken = try await mintAuthenticated(
+                repo: parsed.repo, branch: parsed.branch,
+                ttl: Self.maxTokenTTL, adminToken: adminToken
+            )
+            try await bw.update(name: entry.name, fields: ["token": newToken.id, "value": newToken.id])
+            // Best-effort revoke of the previous token; swallow errors so a
+            // revoke failure cannot un-do an already-successful rotation.
             _ = try? await revokeToken(id: entry.name)
             _ = trigger
             return .rotated
@@ -146,6 +161,44 @@ public struct DriverWoodpecker: SecretRotationDriver {
         } catch {
             return .failed(reason: "woodpecker transport: \(error)")
         }
+    }
+
+    // MARK: - Authenticated mint (production path)
+
+    /// Same as `mint(repo:branch:ttl:)` but injects the admin token as a
+    /// Bearer Authorization header. Called exclusively from `rotate()`.
+    private func mintAuthenticated(
+        repo: String, branch: String, ttl: Int, adminToken: String
+    ) async throws -> (id: String, value: String, ttl: Int) {
+        let effectiveTTL = min(ttl, Self.maxTokenTTL)
+        let body = try JSONSerialization.data(withJSONObject: [
+            "repo":   repo,
+            "branch": branch,
+            "ttl":    effectiveTTL,
+        ])
+        let request = DriverHTTPRequest(
+            method: "POST",
+            url: serverURL + "/api/user/token",
+            headers: [
+                "Content-Type": "application/json",
+                "Authorization": "Bearer \(adminToken)",
+            ],
+            body: body
+        )
+        let response = try await transport.send(request)
+        guard response.status == 200 || response.status == 201 else {
+            throw DriverHTTPError.transportFailed(message: "woodpecker mint http \(response.status)")
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
+              let tokenId = json["id"] as? String,
+              let tokenValue = json["token"] as? String else {
+            throw DriverHTTPError.transportFailed(message: "woodpecker mint response malformed")
+        }
+        let returnedTTL = (json["ttl"] as? Int) ?? effectiveTTL
+        guard returnedTTL <= Self.maxTokenTTL else {
+            throw DriverError.tokenTTLExceeded(requested: returnedTTL)
+        }
+        return (id: tokenId, value: tokenValue, ttl: returnedTTL)
     }
 
     /// Explicit invalidation (called by the rotation engine after applyRotation).

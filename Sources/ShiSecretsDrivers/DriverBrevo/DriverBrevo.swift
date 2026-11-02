@@ -33,10 +33,26 @@ public struct DriverBrevo: SecretRotationDriver {
     }
 
     public func rotate(entry: VaultEntryRef, trigger: RotationTrigger) async -> RotationOutcome {
+        // Resolve the Brevo admin API key from the vault. The key must be stored
+        // under "BREVO_API_KEY" with a "value" field — never plaintext config.
+        guard let bw = bwClient else {
+            return .failed(reason: "brevo vault_misconfigured: bwClient not wired — cannot resolve admin key")
+        }
+        let adminKey: String
+        do {
+            let fields = try await bw.get(name: "BREVO_API_KEY")
+            let candidate = fields["value"] ?? ""
+            guard !candidate.isEmpty else {
+                return .failed(reason: "brevo vault_misconfigured: BREVO_API_KEY absent from vault")
+            }
+            adminKey = candidate
+        } catch {
+            return .failed(reason: "brevo vault_misconfigured: get(BREVO_API_KEY) threw \(error)")
+        }
         let request = DriverHTTPRequest(
             method: "POST",
             url: baseURL + "/v3/senders/api-keys",
-            headers: ["api-key": "<broker-managed>"],
+            headers: ["api-key": adminKey],
             body: nil
         )
         do {
@@ -64,10 +80,16 @@ public struct DriverBrevo: SecretRotationDriver {
         // DELETE of the old api-key is a single round-trip; swallow non-2xx
         // here since invalidation failure must not re-fail the rotation
         // itself (engine already updated last_rotated).
+        // Best-effort: if we cannot resolve the admin key, skip the DELETE.
+        guard let bw = bwClient,
+              let fields = try? await bw.get(name: "BREVO_API_KEY"),
+              let adminKey = fields["value"], !adminKey.isEmpty else {
+            return
+        }
         let request = DriverHTTPRequest(
             method: "DELETE",
             url: baseURL + "/v3/senders/api-keys/\(previous.name)",
-            headers: ["api-key": "<broker-managed>"],
+            headers: ["api-key": adminKey],
             body: nil
         )
         _ = try? await transport.send(request)

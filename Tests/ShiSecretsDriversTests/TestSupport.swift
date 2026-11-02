@@ -56,13 +56,28 @@ public actor RecordingTransport: DriverHTTPTransport {
     }
 }
 
-/// Recording BWClient write-back. Appends every `(name, fields)` call to
-/// `writes` and never throws — tests assert post-conditions.
+/// Recording BWClient read + write-back. Supports seeded `get` entries via
+/// `seedGet(name:fields:)` and appends every `update` call to `writes`.
+/// Tests assert post-conditions on both.
 public actor RecordingBWClient: BWClientWriteBack {
 
     private var _writes: [(name: String, fields: [String: String])] = []
+    private var _vault: [String: [String: String]] = [:]
 
     public init() {}
+
+    /// Pre-populate a vault entry so drivers can resolve admin credentials.
+    public func seedGet(name: String, fields: [String: String]) {
+        _vault[name] = fields
+    }
+
+    nonisolated public func get(name: String) async throws -> [String: String] {
+        await fetchVaultEntry(name: name)
+    }
+
+    private func fetchVaultEntry(name: String) -> [String: String] {
+        _vault[name] ?? [:]
+    }
 
     nonisolated public func update(name: String, fields: [String: String]) async throws {
         await append(name: name, fields: fields)

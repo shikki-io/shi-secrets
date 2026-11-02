@@ -83,6 +83,7 @@ struct DriverWoodpeckerTests {
             response: DriverHTTPResponse(status: 204)
         )
         let bw = RecordingBWClient()
+        await bw.seedGet(name: "WOODPECKER_ADMIN_TOKEN", fields: ["value": "fake-wdpck-admin-token"])
         let driver = DriverWoodpecker(transport: http, bwClient: bw)
         let entry = makeWoodpeckerEntry()
 
@@ -119,7 +120,9 @@ struct DriverWoodpeckerTests {
             match: .init(method: "DELETE", urlContains: "/api/user/token/"),
             response: DriverHTTPResponse(status: 204)
         )
-        let driver = DriverWoodpecker(transport: http)
+        let bw = RecordingBWClient()
+        await bw.seedGet(name: "WOODPECKER_ADMIN_TOKEN", fields: ["value": "fake-wdpck-admin-token"])
+        let driver = DriverWoodpecker(transport: http, bwClient: bw)
         let entry = makeWoodpeckerEntry()
 
         let outcome = await driver.rotate(entry: entry, trigger: .manual(op: "rotate"))

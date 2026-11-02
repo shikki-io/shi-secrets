@@ -96,6 +96,17 @@ struct BrokerWireDispatchRotateTests {
         let socket = UnixSocketServer(config: config)
         let bwClient = InMemoryBWClient()
         await bwClient.activate()
+        // Unlock the vault so dispatchSecretRotate passes the isVaultUnlocked gate.
+        try await bwClient.unlock(masterPassword: "test-unlock", email: "test@rotate")
+        // Mirror the engine seed into the vault so the dispatcher can resolve the
+        // entry via bwClient.get() (the production lookup path post-fix).
+        if let name = seedEntry {
+            let scope = seedScope ?? "\(vendor)/KEY"
+            await bwClient.seedFakeEntry(
+                name: name,
+                fields: ["scope": scope, "value": "test-credential"]
+            )
+        }
         let minter = TokenMinter(
             registry: registry,
             signingKey: Curve25519.Signing.PrivateKey(),

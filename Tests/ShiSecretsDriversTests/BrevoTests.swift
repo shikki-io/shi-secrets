@@ -15,6 +15,7 @@ struct DriverBrevoTests {
             response: DriverHTTPResponse(status: 200, body: payload)
         )
         let bw = RecordingBWClient()
+        await bw.seedGet(name: "BREVO_API_KEY", fields: ["value": "fake-admin-brevo-key"])
         let driver = DriverBrevo(transport: http, bwClient: bw)
         let entry = makeEntry(vendor: "brevo", name: "BREVO_API_KEY")
 
@@ -35,6 +36,7 @@ struct DriverBrevoTests {
             response: DriverHTTPResponse(status: 401)
         )
         let bw = RecordingBWClient()
+        await bw.seedGet(name: "BREVO_API_KEY", fields: ["value": "fake-admin-brevo-key"])
         let driver = DriverBrevo(transport: http, bwClient: bw)
         let entry = makeEntry(vendor: "brevo", name: "BREVO_API_KEY")
 

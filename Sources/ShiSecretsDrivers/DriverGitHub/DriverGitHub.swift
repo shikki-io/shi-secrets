@@ -34,10 +34,29 @@ public struct DriverGitHub: SecretRotationDriver {
     }
 
     public func rotate(entry: VaultEntryRef, trigger: RotationTrigger) async -> RotationOutcome {
+        // Resolve the GitHub admin PAT from the vault. The PAT must be stored
+        // under "GITHUB_ADMIN_TOKEN" with a "value" field — never plaintext config.
+        guard let bw = bwClient else {
+            return .failed(reason: "github vault_misconfigured: bwClient not wired — cannot resolve admin token")
+        }
+        let adminToken: String
+        do {
+            let fields = try await bw.get(name: "GITHUB_ADMIN_TOKEN")
+            let candidate = fields["value"] ?? ""
+            guard !candidate.isEmpty else {
+                return .failed(reason: "github vault_misconfigured: GITHUB_ADMIN_TOKEN absent from vault")
+            }
+            adminToken = candidate
+        } catch {
+            return .failed(reason: "github vault_misconfigured: get(GITHUB_ADMIN_TOKEN) threw \(error)")
+        }
         let request = DriverHTTPRequest(
             method: "POST",
             url: baseURL + "/user/tokens",
-            headers: ["Accept": "application/vnd.github+json"],
+            headers: [
+                "Accept": "application/vnd.github+json",
+                "Authorization": "Bearer \(adminToken)",
+            ],
             body: nil
         )
         do {
