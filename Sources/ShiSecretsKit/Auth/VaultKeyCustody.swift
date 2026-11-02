@@ -18,7 +18,7 @@ import Foundation
 
 // MARK: - Error
 
-public enum VaultKeyCustodyError: Error, Sendable, CustomStringConvertible {
+public enum VaultKeyCustodyError: Error, Sendable, Equatable, CustomStringConvertible {
     /// Stored bytes could not be decoded into a SymmetricKeyPair.
     case malformedData(expectedBytes: Int, gotBytes: Int)
     /// Linux: no TPM2 available; refusing plaintext fallback (BR-05).
