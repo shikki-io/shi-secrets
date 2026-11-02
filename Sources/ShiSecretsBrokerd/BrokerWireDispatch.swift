@@ -517,8 +517,8 @@ public actor BrokerWireDispatcher {
             ))
         }
         src.fireLock()
-        // Give the lock handler a brief moment to propagate (actor dispatch).
-        try? await Task.sleep(nanoseconds: 50_000_000) // 50 ms
+        // The lock propagates asynchronously (DeviceLockObserver fires an
+        // unstructured Task). Callers poll vault.status for up to 2 s per BR-03.
         return WireResponse(id: request.id, result: .object(["ok": .bool(true)]))
     }
 
@@ -532,8 +532,8 @@ public actor BrokerWireDispatcher {
             ))
         }
         src.fireUnlock()
-        // Give the unlock handler a brief moment to propagate (actor dispatch).
-        try? await Task.sleep(nanoseconds: 100_000_000) // 100 ms
+        // The unlock propagates asynchronously (DeviceLockObserver fires an
+        // unstructured Task). Callers poll vault.status for up to 3 s per BR-04.
         return WireResponse(id: request.id, result: .object(["ok": .bool(true)]))
     }
 
