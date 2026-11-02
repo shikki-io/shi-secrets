@@ -25,6 +25,19 @@ struct KeychainStorageTests {
 
     // MARK: - Helpers
 
+    /// A per-test isolated Keychain slot.
+    ///
+    /// Swift Testing re-creates this struct for every test method, so
+    /// `keychainService` is a fresh UUID per test — avoiding any cross-test
+    /// collision and, critically, never touching the production
+    /// `io.shikki.vault / vault-credentials` item.
+    private let keychainService = "test.shi.keychain-storage.\(UUID().uuidString)"
+    private let keychainAccount = "test-storage-creds"
+
+    private func makeKC() -> KeychainVaultCredentials {
+        KeychainVaultCredentials(service: keychainService, account: keychainAccount)
+    }
+
     private func makeCredentials(
         serverURL: URL = URL(string: "https://vw.obyw.one")!
     ) -> VaultwardenCredentials {
@@ -36,7 +49,7 @@ struct KeychainStorageTests {
     }
 
     private func cleanKeychain() {
-        KeychainVaultCredentials().delete()
+        makeKC().delete()
     }
 
     // MARK: - BR-SM-01: Round-trip
@@ -47,7 +60,7 @@ struct KeychainStorageTests {
         defer { cleanKeychain() }
 
         let original = makeCredentials()
-        let kc = KeychainVaultCredentials()
+        let kc = makeKC()
         do {
             try kc.store(original)
         } catch KeychainVaultCredentials.KeychainError.osError(let status)
@@ -68,7 +81,7 @@ struct KeychainStorageTests {
         // have no ProcessInfo reference and take no env-var arguments.
         // We verify the signature constraint here — if BW_SESSION leaks
         // in via default arguments, this test would need updating (it won't).
-        let kc = KeychainVaultCredentials()
+        let kc = makeKC()
         // store() signature: takes VaultwardenCredentials, not String session.
         // If this compiles, the BW_SESSION string path is gone.
         cleanKeychain()
@@ -96,7 +109,7 @@ struct KeychainStorageTests {
         // We verify that storing + loading succeeds (the OS enforces the policy;
         // the test verifies the code path doesn't use a weaker accessibility).
         // A failed store due to policy mismatch would throw KeychainError.osError.
-        let kc = KeychainVaultCredentials()
+        let kc = makeKC()
         let creds = makeCredentials()
         // Should not throw — kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         // is available on all macOS 14+ devices.
@@ -137,7 +150,7 @@ struct KeychainStorageTests {
         // is applied. On Intel/no-Touch-ID, the fallback (no access control flag)
         // is used. Both paths are valid — the test verifies the store/load
         // cycle completes without throwing.
-        let kc = KeychainVaultCredentials()
+        let kc = makeKC()
         let creds = makeCredentials()
         do {
             try kc.store(creds)
@@ -168,7 +181,7 @@ struct KeychainStorageTests {
         // has no ProcessInfo dependency.
         // Adversarial variant: test_adversarial_envVarBWSession_set_brokerDoesNotUseIt
         // lives in AdversarialTests.swift.
-        let kc = KeychainVaultCredentials()
+        let kc = makeKC()
         // We cannot set a process env var and verify it's not used here,
         // but the structural absence of ProcessInfo in load() is sufficient.
         _ = kc  // reference to confirm the type compiles with no env-var dep

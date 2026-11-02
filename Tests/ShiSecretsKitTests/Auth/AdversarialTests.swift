@@ -8,6 +8,16 @@ import Foundation
 @Suite("Adversarial / Threat Model")
 struct AdversarialTests {
 
+    // MARK: - Helpers
+
+    /// A per-test isolated Keychain slot — never touches the production item.
+    private func makeTestKC() -> KeychainVaultCredentials {
+        KeychainVaultCredentials(
+            service: "test.shi.adversarial.\(UUID().uuidString)",
+            account: "test-adv-creds"
+        )
+    }
+
     // MARK: - BR-SM-04: BW_SESSION env var set — broker ignores it
 
     @Test("Adversarial SM-04: BW_SESSION set in env — broker does not use it")
@@ -19,7 +29,7 @@ struct AdversarialTests {
         // Structural: KeychainVaultCredentials uses Security.framework only.
         // If BW_SESSION were read, the load() would take a String? argument
         // or call ProcessInfo internally — neither is the case.
-        let kc = KeychainVaultCredentials()
+        let kc = makeTestKC()
         // Method signature takes no env-var argument:
         // func load() throws -> VaultwardenCredentials
         // This compiles cleanly — no env-var path exists.
@@ -33,8 +43,9 @@ struct AdversarialTests {
     func keychainItemDeleted_midUptime_noEnvFallback() throws {
         // Simulate: item was available at startup but was deleted by another process.
         // A fresh load() call after deletion should throw KeychainError.itemNotFound.
-        let kc = KeychainVaultCredentials()
-        kc.delete()  // ensure the item doesn't exist
+        // Uses an isolated test Keychain slot — never touches the production item.
+        let kc = makeTestKC()
+        kc.delete()  // ensure the item doesn't exist (no-op since slot is fresh)
 
         do {
             _ = try kc.load()
