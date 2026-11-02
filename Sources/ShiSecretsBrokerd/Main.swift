@@ -321,6 +321,23 @@ struct BrokerMain {
             devMode: devArgs.enabled || devArgs.dryRun
         )
 
+        // ── 2b. Wire DeviceLockObserver (spec 7c2e9a14 W2) ────────────────
+        // --dry-run: ManualDeviceLockSignalSource (test seam via wire protocol).
+        // --dev-mode: same (no real screen-lock in dev mode).
+        // production: SystemDeviceLockSignalSource (real macOS notifications).
+        let lockSignalSource: any DeviceLockSignalSource
+        let manualLockSource: ManualDeviceLockSignalSource?
+        if devArgs.dryRun || devArgs.enabled {
+            let manual = ManualDeviceLockSignalSource()
+            lockSignalSource = manual
+            manualLockSource = manual
+        } else {
+            lockSignalSource = SystemDeviceLockSignalSource()
+            manualLockSource = nil
+        }
+        let lockObserver = DeviceLockObserver(source: lockSignalSource, bwClient: bwClient)
+        await daemon.wireDeviceLock(lockObserver, simulationSource: manualLockSource)
+
         // ── 3. start() — preflight: socket bind + kernel job registration ─
         do {
             try await daemon.start()

@@ -41,6 +41,14 @@ public protocol BrokerClient: Sendable {
     func vaultStatus() async throws -> VaultStatus
     /// Drop the vault key from memory and custody store (BR-06).
     func vaultLock() async throws
+
+    // MARK: - Simulation (spec 7c2e9a14 W2, --dry-run / test only)
+
+    /// Fire a simulated screen-lock event. Only works against a --dry-run broker.
+    /// In production the daemon returns a "denied" error.
+    func simulateDeviceLock() async throws
+    /// Fire a simulated screen-unlock event. Only works against a --dry-run broker.
+    func simulateDeviceUnlock() async throws
 }
 
 /// Result from vault.status. True means locked; data operations will fail.

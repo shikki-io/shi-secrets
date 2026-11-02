@@ -127,6 +127,14 @@ public actor BrokerDaemon {
     /// required by `ShiSecretsModule`.
     public let adminVerifier: AdminActionVerifier?
 
+    // spec 7c2e9a14 W2: DeviceLockObserver + test seam.
+    // Both are nil until wireDeviceLock(_:simulationSource:) is called.
+    // Not init parameters — keeps BrokerDaemon.init non-breaking.
+    public var deviceLockObserver: DeviceLockObserver?
+    /// Non-nil only in devMode (--dry-run). Used by BrokerWireDispatcher
+    /// for vault.simulate.device_lock / vault.simulate.device_unlock.
+    public var simulationLockSource: ManualDeviceLockSignalSource?
+
     // Cached kernel collaborators used by T53 registration.
     private let anomalyStaging: AnomalyStaging
     private let activeSessions: ActiveSessions
@@ -179,6 +187,27 @@ public actor BrokerDaemon {
         self.anomalyStaging = anomalyStaging
         self.activeSessions = activeSessions
         self.devMode = devMode
+    }
+
+    // MARK: - Device lock wiring (spec 7c2e9a14 W2)
+
+    /// Wire a DeviceLockObserver (and optional test seam) into this daemon.
+    ///
+    /// Must be called before `start()` for the observer to begin listening.
+    /// Calling after `start()` is safe but the observer will start immediately.
+    ///
+    /// - Parameters:
+    ///   - observer: The observer to wire. Stored and started during `start()`.
+    ///   - simulationSource: The `ManualDeviceLockSignalSource` used by the
+    ///     observer's signal source; exposed so `BrokerWireDispatcher` can fire
+    ///     test events via `vault.simulate.device_lock/unlock`. Only set in
+    ///     `--dry-run` mode.
+    public func wireDeviceLock(
+        _ observer: DeviceLockObserver,
+        simulationSource: ManualDeviceLockSignalSource? = nil
+    ) {
+        self.deviceLockObserver    = observer
+        self.simulationLockSource  = simulationSource
     }
 
     // MARK: - start
@@ -239,6 +268,12 @@ public actor BrokerDaemon {
         if !devMode {
             try await registerKernelJobs()
         }
+
+        // 5. Start device-lock observation (spec 7c2e9a14 W2, BR-03/BR-04).
+        // Uses SystemDeviceLockSignalSource in production and
+        // ManualDeviceLockSignalSource in --dry-run mode (test seam).
+        await deviceLockObserver?.start()
+
         started = true
     }
 

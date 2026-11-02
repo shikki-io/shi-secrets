@@ -150,6 +150,16 @@ public actor ProductionBrokerClient: BrokerClient {
         _ = try await call(method: "vault.lock", params: .object([:]))
     }
 
+    /// Fire a simulated device-lock event (--dry-run only). spec 7c2e9a14 W2.
+    public func simulateDeviceLock() async throws {
+        _ = try await call(method: "vault.simulate.device_lock", params: .object([:]))
+    }
+
+    /// Fire a simulated device-unlock event (--dry-run only). spec 7c2e9a14 W2.
+    public func simulateDeviceUnlock() async throws {
+        _ = try await call(method: "vault.simulate.device_unlock", params: .object([:]))
+    }
+
     // MARK: - Internals
 
     private func call(method: String, params: JSONValue) async throws -> JSONValue {

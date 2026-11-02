@@ -133,10 +133,12 @@ actor RecordingBrokerClient: BrokerClient {
     private func snapshotSeams() -> [SeamsWriter.Row] { seamRows }
 
     // vault.* stubs — RecordingBrokerClient exercises CLI rendering;
-    // vault unlock/lock is not exercised in the existing CLI test suite.
+    // vault unlock/lock/simulate are not exercised in the existing CLI test suite.
     nonisolated func vaultUnlock(masterPassword: String, email: String) async throws {}
     nonisolated func vaultStatus() async throws -> VaultStatus { VaultStatus(locked: false) }
     nonisolated func vaultLock() async throws {}
+    nonisolated func simulateDeviceLock() async throws {}
+    nonisolated func simulateDeviceUnlock() async throws {}
 }
 
 // Fixed-clock helper for footer snapshots.

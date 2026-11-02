@@ -64,6 +64,14 @@ public actor BrokerWireDispatcher {
         case "vault.lock":
             return await dispatchVaultLock(request, peerUid: peerUid)
 
+        // spec 7c2e9a14 W2 — test-only simulation verbs (dev/dry-run mode).
+        // These are NEVER accessible in production (denied when simulationLockSource is nil).
+        case "vault.simulate.device_lock":
+            return await dispatchSimulateDeviceLock(request, peerUid: peerUid)
+
+        case "vault.simulate.device_unlock":
+            return await dispatchSimulateDeviceUnlock(request, peerUid: peerUid)
+
         // Phase 0.5+: token.{revoke, revokeAllBots, revokeAllBotsSigned}.
         // Phase 0.6+: audit.{blastRadius, recent, seams}.
         default:
@@ -493,6 +501,40 @@ public actor BrokerWireDispatcher {
                 message: "vault.lock failed: \(error)"
             ))
         }
+    }
+
+    // MARK: - vault.simulate.device_lock / vault.simulate.device_unlock (spec 7c2e9a14 W2)
+
+    /// Fire a simulated screen-lock event. Only available when a
+    /// ManualDeviceLockSignalSource was wired (--dry-run mode). In production
+    /// this verb is denied because simulationLockSource is nil.
+    private func dispatchSimulateDeviceLock(_ request: WireRequest, peerUid: UInt32) async -> WireResponse {
+        if let denied = await requireOwner(request, peerUid: peerUid) { return denied }
+        guard let src = await daemon.simulationLockSource else {
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.denied,
+                message: "vault.simulate.device_lock: not available in production mode"
+            ))
+        }
+        src.fireLock()
+        // Give the lock handler a brief moment to propagate (actor dispatch).
+        try? await Task.sleep(nanoseconds: 50_000_000) // 50 ms
+        return WireResponse(id: request.id, result: .object(["ok": .bool(true)]))
+    }
+
+    /// Fire a simulated screen-unlock event. Only available in --dry-run mode.
+    private func dispatchSimulateDeviceUnlock(_ request: WireRequest, peerUid: UInt32) async -> WireResponse {
+        if let denied = await requireOwner(request, peerUid: peerUid) { return denied }
+        guard let src = await daemon.simulationLockSource else {
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.denied,
+                message: "vault.simulate.device_unlock: not available in production mode"
+            ))
+        }
+        src.fireUnlock()
+        // Give the unlock handler a brief moment to propagate (actor dispatch).
+        try? await Task.sleep(nanoseconds: 100_000_000) // 100 ms
+        return WireResponse(id: request.id, result: .object(["ok": .bool(true)]))
     }
 
     // MARK: - vault.status (feat/vault-unlock-2026-11-01)
