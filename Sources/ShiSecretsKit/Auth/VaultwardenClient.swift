@@ -156,6 +156,29 @@ public actor VaultwardenClient {
     /// BR-01: master password is never stored through this path.
     private var custody: (any VaultKeyCustody)?
 
+    // MARK: - Lock reason / custody backend (spec 7c2e9a14 W4, BR-07, BR-08)
+
+    /// Human-readable reason why the vault is locked. Nil when unlocked.
+    /// Set by the lock/restore path; cleared on successful unlock.
+    private var _lockReason: String?
+
+    /// The active custody backend description (BR-07). Nil when locked.
+    public var custodyBackend: String? {
+        get async {
+            guard await vaultKey.isUnlocked else { return nil }
+            return custody?.custodyDescription
+        }
+    }
+
+    /// The current lock reason. Nil when unlocked or reason unknown.
+    public var lockReason: String? { _lockReason }
+
+    /// Record (or clear) the reason the vault is locked.
+    /// Cleared to nil when unlock() succeeds.
+    public func setLockReason(_ reason: String?) {
+        _lockReason = reason
+    }
+
     /// Inject a custody backend. Called by DryRunBootstrap (W0) and
     /// production Bootstrap (W1). Safe to call before or after unlock.
     public func wireCustody(_ custody: any VaultKeyCustody) {
@@ -478,6 +501,8 @@ public actor VaultwardenClient {
         if let c = custody {
             try? await c.store(keys)
         }
+        // Clear lock reason on successful unlock (BR-07/BR-08).
+        _lockReason = nil
     }
 
     /// Install a key derived elsewhere — used by the broker, which unlocks

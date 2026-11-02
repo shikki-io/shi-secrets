@@ -64,6 +64,10 @@ public actor BrokerWireDispatcher {
         case "vault.lock":
             return await dispatchVaultLock(request, peerUid: peerUid)
 
+        // spec 7c2e9a14 W4 — vault.reencrypt lists plaintext entries, returns count (BR-10).
+        case "vault.reencrypt":
+            return await dispatchVaultReencrypt(request, peerUid: peerUid)
+
         // spec 7c2e9a14 W2 — test-only simulation verbs (dev/dry-run mode).
         // These are NEVER accessible in production (denied when simulationLockSource is nil).
         case "vault.simulate.device_lock":
@@ -546,7 +550,32 @@ public actor BrokerWireDispatcher {
     /// Wire result: `{ "locked": Bool }`
     private func dispatchVaultStatus(_ request: WireRequest, peerUid: UInt32) async -> WireResponse {
         let unlocked = await daemon.bwClient.isVaultUnlocked
-        return WireResponse(id: request.id, result: .object(["locked": .bool(!unlocked)]))
+        let reason  = await daemon.bwClient.lockReason
+        let backend = await daemon.bwClient.custodyBackend
+        var result: [String: JSONValue] = ["locked": .bool(!unlocked)]
+        if let reason  { result["reason"]  = .string(reason) }
+        if let backend { result["backend"] = .string(backend) }
+        return WireResponse(id: request.id, result: .object(result))
+    }
+
+    /// Scan the vault for plaintext entries and return a count (BR-10).
+    /// The `--dry-run` and production paths both call bwClient.list().
+    /// Actual re-encryption (writing new encrypted values) is out of scope
+    /// per spec 7c2e9a14 §Out-of-scope.
+    private func dispatchVaultReencrypt(_ request: WireRequest, peerUid: UInt32) async -> WireResponse {
+        if let denied = await requireOwner(request, peerUid: peerUid) { return denied }
+        do {
+            let entries = try await daemon.bwClient.list(filter: nil)
+            let count = entries.count
+            return WireResponse(id: request.id, result: .object([
+                "count": .int(Int64(count)),
+            ]))
+        } catch {
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.internalError,
+                message: "vault.reencrypt list failed: \(error)"
+            ))
+        }
     }
 
     // MARK: - Helpers

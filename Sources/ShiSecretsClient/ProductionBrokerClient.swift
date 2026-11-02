@@ -137,12 +137,17 @@ public actor ProductionBrokerClient: BrokerClient {
     }
 
     /// Query locked/unlocked state from the broker (vault.status).
+    /// BR-07: returns locked flag plus optional reason (BR-08) and backend (BR-07).
     public func vaultStatus() async throws -> VaultStatus {
         let result = try await call(method: "vault.status", params: .object([:]))
         guard case let .object(obj) = result, case let .bool(locked) = obj["locked"] else {
             throw BrokerClientError.wireDecodeFailed("vault.status expected {locked: Bool}")
         }
-        return VaultStatus(locked: locked)
+        var reason: String?
+        var backend: String?
+        if case let .string(r) = obj["reason"] { reason = r }
+        if case let .string(b) = obj["backend"] { backend = b }
+        return VaultStatus(locked: locked, reason: reason, backend: backend)
     }
 
     /// Drop the vault key from memory and custody store (vault.lock).
@@ -158,6 +163,16 @@ public actor ProductionBrokerClient: BrokerClient {
     /// Fire a simulated device-unlock event (--dry-run only). spec 7c2e9a14 W2.
     public func simulateDeviceUnlock() async throws {
         _ = try await call(method: "vault.simulate.device_unlock", params: .object([:]))
+    }
+
+    /// List plaintext vault entries and return their count (vault.reencrypt, BR-10).
+    public func vaultReencrypt() async throws -> VaultReencryptResult {
+        let result = try await call(method: "vault.reencrypt", params: .object([:]))
+        guard case let .object(obj) = result,
+              case let .int(count) = obj["count"] else {
+            throw BrokerClientError.wireDecodeFailed("vault.reencrypt expected {count: Int}")
+        }
+        return VaultReencryptResult(count: Int(count))
     }
 
     // MARK: - Internals

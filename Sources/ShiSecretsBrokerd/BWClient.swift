@@ -107,6 +107,14 @@ public protocol BWClient: BWClientWriteBack, Sendable {
     /// Used by the device-lock path so unlock can restore the key from
     /// custody without a master-password prompt (BR-04).
     func lockMemoryOnly() async throws
+
+    // MARK: - Status (spec 7c2e9a14 W4, BR-07, BR-08)
+
+    /// Human-readable reason the vault is locked (nil when unlocked). BR-07/BR-08.
+    var lockReason: String? { get async }
+
+    /// Description of the active custody backend (nil when locked). BR-07.
+    var custodyBackend: String? { get async }
 }
 
 // MARK: - InMemoryBWClient (fake / default DEBUG + test binding)
@@ -219,6 +227,12 @@ public actor InMemoryBWClient: BWClient {
     public func lockMemoryOnly() async throws {
         _vaultUnlocked = false
     }
+
+    /// lockReason: always nil for in-memory (no custody tracking).
+    public var lockReason: String? { nil }
+
+    /// custodyBackend: always nil for in-memory (no custody).
+    public var custodyBackend: String? { nil }
 }
 
 // MARK: - ProductionBWClient (W3 — full read+write VaultwardenClient-backed)
@@ -369,9 +383,35 @@ public actor ProductionBWClient: BWClient {
     }
 
     /// Try to restore the vault key from the custody backend without the
-    /// master password (BR-04). No-op if no key is stored. Non-fatal on error.
+    /// master password (BR-04). No-op if no key is stored.
+    /// On error, sets lockReason on the VaultwardenClient (BR-08, BR-09).
     public func restorePersistedKey() async {
         guard let vc = vaultClient else { return }
-        try? await vc.restoreFromCustody()
+        do {
+            try await vc.restoreFromCustody()
+        } catch {
+            // BR-08: a failed store read reports locked with reason.
+            await vc.setLockReason(
+                "stored key no longer decrypts — run `shi secrets unlock`"
+            )
+        }
+    }
+
+    // MARK: - Status (spec 7c2e9a14 W4, BR-07, BR-08)
+
+    /// lockReason: human-readable reason the vault is locked (nil when unlocked).
+    public var lockReason: String? {
+        get async {
+            guard let vc = vaultClient else { return nil }
+            return await vc.lockReason
+        }
+    }
+
+    /// custodyBackend: description of the active custody backend (nil when locked).
+    public var custodyBackend: String? {
+        get async {
+            guard let vc = vaultClient else { return nil }
+            return await vc.custodyBackend
+        }
     }
 }

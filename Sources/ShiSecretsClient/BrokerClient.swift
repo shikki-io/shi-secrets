@@ -49,12 +49,31 @@ public protocol BrokerClient: Sendable {
     func simulateDeviceLock() async throws
     /// Fire a simulated screen-unlock event. Only works against a --dry-run broker.
     func simulateDeviceUnlock() async throws
+
+    // MARK: - Re-encryption (spec 7c2e9a14 W4, BR-10)
+
+    /// List plaintext vault entries and return their count.
+    /// Does not re-encrypt values — flags them for operator rotation.
+    func vaultReencrypt() async throws -> VaultReencryptResult
 }
 
 /// Result from vault.status. True means locked; data operations will fail.
+/// reason and backend are present when the broker surfaces BR-07/BR-08 context.
 public struct VaultStatus: Sendable, Equatable {
     public let locked: Bool
-    public init(locked: Bool) { self.locked = locked }
+    public let reason: String?
+    public let backend: String?
+    public init(locked: Bool, reason: String? = nil, backend: String? = nil) {
+        self.locked = locked
+        self.reason = reason
+        self.backend = backend
+    }
+}
+
+/// Result from vault.reencrypt (BR-10).
+public struct VaultReencryptResult: Sendable, Equatable, Codable {
+    public let count: Int
+    public init(count: Int) { self.count = count }
 }
 
 // MARK: - Result types
