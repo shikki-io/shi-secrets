@@ -20,7 +20,7 @@ public enum PlistPathPolicy {
 
     public static let canonicalLabel = "io.shikki.secrets-brokerd"
     public static let legacyLabels = [
-        "io.shikki.secrets-brokerd",
+        "eu.fj-studios.shikki.secrets-brokerd",
         "one.obyw.shikki.secrets-brokerd",
     ]
 
@@ -35,7 +35,7 @@ public enum PlistPathPolicy {
         return [
             NSString(string: "~/.shikki/LaunchAgents/").expandingTildeInPath,
             NSString(string: "~/.local/share/shikki/LaunchAgents/").expandingTildeInPath,
-            NSString(string: "~/Library/LaunchAgents/io.shikki.secrets-brokerd.plist").expandingTildeInPath,
+            NSString(string: "~/Library/LaunchAgents/eu.fj-studios.shikki.secrets-brokerd.plist").expandingTildeInPath,
             NSString(string: "~/Library/LaunchAgents/one.obyw.shikki.secrets-brokerd.plist").expandingTildeInPath,
         ]
     }

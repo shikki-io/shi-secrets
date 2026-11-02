@@ -243,7 +243,7 @@ public struct SecretsSetupWizardCommand {
         _ = try? processRunner.run(executable: "/bin/launchctl",
                                     arguments: ["bootout", "gui/\(uid)/io.shikki.secrets-brokerd"])
         _ = try? processRunner.run(executable: "/bin/launchctl",
-                                    arguments: ["bootout", "gui/\(uid)/io.shikki.secrets-brokerd"])
+                                    arguments: ["bootout", "gui/\(uid)/eu.fj-studios.shikki.secrets-brokerd"])
         // HIGH-1 fix (@security panel): `pkill -f` matches any process whose
         // argv contains the string, including malicious paths like
         // /tmp/evil-shikki-secrets-brokerd. The launchctl bootout above is

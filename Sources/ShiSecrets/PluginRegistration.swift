@@ -414,7 +414,7 @@ public struct ShiSecretsPlugin: PluginCLISurface {
             fputs(
                 """
                 OVERVIEW: Bootout the canonical brokerd launchd label + any legacy labels
-                (io.shikki.secrets-brokerd, one.obyw.shikki.secrets-brokerd).
+                (eu.fj-studios.shikki.secrets-brokerd, one.obyw.shikki.secrets-brokerd).
                 Archives any stale plists at non-canonical paths under
                 ~/.shikki/LaunchAgents/ or ~/.local/share/shikki/LaunchAgents/.
 
