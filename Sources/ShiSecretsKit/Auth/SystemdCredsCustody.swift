@@ -42,19 +42,25 @@ public protocol SystemdCredsRunner: Sendable {
 // MARK: - Linux implementation
 
 #if os(Linux)
+import ShellKit
 
 /// Linux production runner: shells out to `systemd-creds`.
 /// Requires: systemd ≥ 251, `systemd-creds` on PATH, TPM2 present.
 public struct ProductionSystemdCredsRunner: SystemdCredsRunner, Sendable {
 
-    public init() {}
+    private static let timeout: TimeInterval = 30
+    private let executor: any ShellExecutorProtocol
+
+    public init(executor: any ShellExecutorProtocol = TimedShellExecutor()) {
+        self.executor = executor
+    }
 
     public func encrypt(_ data: Data) async throws -> Data {
         // systemd-creds encrypt reads from stdin when source is "-".
         // --tpm2-device=auto picks the first available TPM2 device.
         // --tpm2-pcrs=0+7: seals to firmware measurements (PCR-0) and
         // Secure Boot state (PCR-7) so a tampered boot chain cannot unseal.
-        let result = try await runProcess(
+        let blob = try await runProcess(
             arguments: [
                 "systemd-creds", "encrypt",
                 "--tpm2-device=auto",
@@ -64,16 +70,16 @@ public struct ProductionSystemdCredsRunner: SystemdCredsRunner, Sendable {
             ],
             stdin: data
         )
-        guard !result.blob.isEmpty else {
+        guard !blob.isEmpty else {
             throw VaultKeyCustodyError.tpmUnavailable(
                 reason: "systemd-creds encrypt produced empty output"
             )
         }
-        return result.blob
+        return blob
     }
 
     public func decrypt(_ blob: Data) async throws -> Data {
-        let result = try await runProcess(
+        let blob = try await runProcess(
             arguments: [
                 "systemd-creds", "decrypt",
                 "-",   // source: stdin
@@ -81,63 +87,36 @@ public struct ProductionSystemdCredsRunner: SystemdCredsRunner, Sendable {
             ],
             stdin: blob
         )
-        guard !result.blob.isEmpty else {
+        guard !blob.isEmpty else {
             throw VaultKeyCustodyError.tpmUnavailable(
                 reason: "systemd-creds decrypt produced empty output"
             )
         }
-        return result.blob
+        return blob
     }
 
     // MARK: - Process runner
 
-    private struct ProcessResult {
-        let blob: Data
-        let exitCode: Int32
-        let stderr: String
-    }
-
-    private func runProcess(arguments: [String], stdin: Data) async throws -> ProcessResult {
-        return try await withCheckedThrowingContinuation { continuation in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = arguments
-
-            let stdinPipe  = Pipe()
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardInput  = stdinPipe
-            process.standardOutput = stdoutPipe
-            process.standardError  = stderrPipe
-
-            process.terminationHandler = { proc in
-                let out = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-                let errStr = String(data: errData, encoding: .utf8) ?? ""
-                if proc.terminationStatus == 0 {
-                    continuation.resume(returning: ProcessResult(
-                        blob: out,
-                        exitCode: proc.terminationStatus,
-                        stderr: errStr
-                    ))
-                } else {
-                    let reason = errStr.isEmpty
-                        ? "exit \(proc.terminationStatus)"
-                        : errStr.trimmingCharacters(in: .whitespacesAndNewlines)
-                    continuation.resume(throwing: VaultKeyCustodyError.tpmUnavailable(reason: reason))
-                }
-            }
-
-            do {
-                try process.run()
-                stdinPipe.fileHandleForWriting.write(stdin)
-                try stdinPipe.fileHandleForWriting.close()
-            } catch {
-                continuation.resume(throwing: VaultKeyCustodyError.tpmUnavailable(
-                    reason: "systemd-creds launch failed: \(error)"
-                ))
-            }
+    /// One `systemd-creds` run through ShellKit (timeout, SIGTERM/SIGKILL
+    /// escalation, concurrency cap) — never a raw `Process`.
+    private func runProcess(arguments: [String], stdin: Data) async throws -> Data {
+        let result: ShellCommandResult
+        do {
+            result = try await executor.run(
+                arguments, cwd: nil, env: nil, timeout: Self.timeout, stdin: stdin
+            )
+        } catch {
+            throw VaultKeyCustodyError.tpmUnavailable(
+                reason: "systemd-creds launch failed: \(error)"
+            )
         }
+        guard result.exitCode == 0 else {
+            let reason = result.stderrString.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw VaultKeyCustodyError.tpmUnavailable(
+                reason: reason.isEmpty ? "exit \(result.exitCode)" : reason
+            )
+        }
+        return result.stdout
     }
 }
 
@@ -150,11 +129,12 @@ public struct SystemdCredsCustody: VaultKeyCustody, Sendable {
     /// Subprocess runner (production or injected test double).
     private let runner: any SystemdCredsRunner
 
-    /// Production init: uses the default `CREDENTIALS_DIRECTORY` path when available,
-    /// otherwise falls back to `~/.shikki/state/vault.cred`.
-    public init() {
-        let credDir = ProcessInfo.processInfo.environment["CREDENTIALS_DIRECTORY"]
-        let base = credDir ?? ((NSHomeDirectory() as NSString).appendingPathComponent(".shikki/state"))
+    /// Production init. The state directory is injected by the caller (the
+    /// broker's resolved layout) — the kit holds no home-directory literal.
+    /// `credentialsDirectory` is systemd's `CREDENTIALS_DIRECTORY`, when set,
+    /// and wins over the state directory.
+    public init(stateDirectory: String, credentialsDirectory: String? = nil) {
+        let base = credentialsDirectory ?? stateDirectory
         self.blobPath = (base as NSString).appendingPathComponent("vault.cred")
         self.runner   = ProductionSystemdCredsRunner()
     }

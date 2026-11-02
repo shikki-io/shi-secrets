@@ -180,7 +180,13 @@ struct BrokerMain {
             // AppleKeychainCustody.checkAvailability() throws dataProtectionUnavailable
             // if the binary lacks keychain-access-groups — wireCustody is no-op in that
             // case (key stays memory-only, not a fatal error at startup).
-            let keychainCustody = AppleKeychainCustody()
+            // The Keychain seam comes from the DI container (ShiSecretsModule
+            // registers the Security-framework store); custody never builds it.
+            let keychainContainer = DIContainer()
+            ShiSecretsModule().register(into: keychainContainer)
+            let keychainCustody = AppleKeychainCustody(
+                keychain: try keychainContainer.resolve((any KeychainStore).self)
+            )
             await prod.wireCustody(keychainCustody)
             await prod.restorePersistedKey()
             bwClient = prod

@@ -1,5 +1,5 @@
 {
-  "originHash" : "8a10cd70217e1e25bc30804507646258cfe62a4ec05764146013e82466f5fa72",
+  "originHash" : "519002eca6d0e9ca1824454b16af9d91ecb318538ec9939796855c6751fd428a",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -29,6 +29,15 @@
       }
     },
     {
+      "identity" : "corekit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/FJ-Studios/CoreKit.git",
+      "state" : {
+        "revision" : "87827a055b6e7805eecc66d3fb8cc45dc234dc55",
+        "version" : "0.11.1"
+      }
+    },
+    {
       "identity" : "multipart-kit",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/vapor/multipart-kit.git",
@@ -44,6 +53,15 @@
       "state" : {
         "revision" : "1a10ccea61e4248effd23b6e814999ce7bdf0ee0",
         "version" : "4.9.3"
+      }
+    },
+    {
+      "identity" : "shellkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/shikki-io/ShellKit.git",
+      "state" : {
+        "revision" : "bd73127d2997a1a201acdc3d85d68a20919086de",
+        "version" : "0.5.0"
       }
     },
     {

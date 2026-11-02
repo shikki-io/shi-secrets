@@ -31,13 +31,29 @@ struct AppleKeychainCustodyTests {
         )
     }
 
-    /// Custody that simulates entitlement ABSENT (team-sign without keychain-access-groups).
-    private func unavailableCustody() -> AppleKeychainCustody {
-        AppleKeychainCustody(
-            availabilityProbe: {
-                throw VaultKeyCustodyError.dataProtectionUnavailable
-            }
+    /// Resolve the keychain seam through the DI container, the way production
+    /// does, but with the in-memory store registered: the real Keychain is
+    /// unreachable from this suite.
+    private func makeCustody(
+        memoryOnlyReason: String? = nil,
+        service: String = "io.shikki.vault-key",
+        account: String = "vault-session-key"
+    ) throws -> AppleKeychainCustody {
+        let container = DIContainer()
+        container.registerSingleton(
+            (any KeychainStore).self,
+            InMemoryKeychainStore(memoryOnlyReason: memoryOnlyReason)
         )
+        return AppleKeychainCustody(
+            service: service,
+            account: account,
+            keychain: try container.resolve((any KeychainStore).self)
+        )
+    }
+
+    /// Custody that simulates entitlement ABSENT (team-sign without keychain-access-groups).
+    private func unavailableCustody() throws -> AppleKeychainCustody {
+        try makeCustody(memoryOnlyReason: "keychain-access-groups not present")
     }
 
     // MARK: - T-08: memory-only when data protection is unavailable (BR-02)
@@ -47,7 +63,7 @@ struct AppleKeychainCustodyTests {
         .tags(.vaultLock)
     )
     func test_T08_memoryOnlyWhenEntitlementAbsent() async throws {
-        let custody = unavailableCustody()
+        let custody = try unavailableCustody()
 
         // load() must return nil (not throw) — no persisted key in memory-only mode.
         let loaded = try await custody.load()
@@ -65,32 +81,32 @@ struct AppleKeychainCustodyTests {
         try await custody.clear()   // must not throw
     }
 
+    // MARK: - Round trip through the seam
+
+    @Test("available store: store() then load() round-trips; clear() removes it")
+    func test_roundTripWhenAvailable() async throws {
+        let custody = try makeCustody()
+        let keys = makeKeyPair()
+        try await custody.store(keys)
+        let loaded = try await custody.load()
+        #expect(loaded != nil, "available store must persist the key")
+        try await custody.clear()
+        #expect(try await custody.load() == nil, "clear() must remove the item")
+    }
+
     // MARK: - custodyDescription
 
     @Test("custodyDescription — available mode: includes service and account")
-    func test_custodyDescription_available() {
-        // Use test init with a no-throw probe to simulate the entitlement being present.
-        let custody = AppleKeychainCustody(
-            service: "io.shikki.vault-key",
-            account: "vault-session-key",
-            availabilityProbe: {}  // no-op probe = available
-        )
-        #expect(custody.custodyDescription.contains("apple-keychain"),
-                "available description must include 'apple-keychain'")
-        #expect(custody.custodyDescription.contains("io.shikki.vault-key"),
-                "available description must include the service name")
+    func test_custodyDescription_available() throws {
+        let custody = try makeCustody()
+        #expect(custody.custodyDescription.contains("apple-keychain"))
+        #expect(custody.custodyDescription.contains("io.shikki.vault-key"))
     }
 
-    @Test("custodyDescription — test-init with unavailable probe: still shows apple-keychain")
-    func test_custodyDescription_testInitUnavailableProbe() {
-        // Test init sets _memoryOnlyReason = nil regardless of probe.
-        // custodyDescription therefore shows the "available" label.
-        let custody = AppleKeychainCustody(
-            availabilityProbe: { throw VaultKeyCustodyError.dataProtectionUnavailable }
-        )
-        // Test init never sets _memoryOnlyReason, so custodyDescription uses service/account.
-        #expect(custody.custodyDescription.contains("apple-keychain"),
-                "test-init custody description must include 'apple-keychain'")
+    @Test("custodyDescription — unavailable store: memory only with the reason")
+    func test_custodyDescription_unavailable() throws {
+        let custody = try unavailableCustody()
+        #expect(custody.custodyDescription.hasPrefix("memory only"))
     }
 }
 

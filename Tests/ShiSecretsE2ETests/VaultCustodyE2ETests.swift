@@ -14,6 +14,7 @@
 
 import Foundation
 import ShiSecretsClient
+import ShellKit
 import ShiSecretsKit
 import Testing
 
@@ -33,10 +34,10 @@ struct VaultCustodyE2ETests {
 
     @Test("T-01: unlock persists key; broker restart opens without master password")
     func test_T01_unlockPersistsKey_restartOpensWithoutPassword() async throws {
-        let tmpDir = makeTmpDir()
-        defer { try? FileManager.default.removeItem(atPath: tmpDir) }
-        let custodyFile = (tmpDir as NSString).appendingPathComponent("vault.key")
-        let socketPath  = (tmpDir as NSString).appendingPathComponent("broker.sock")
+        let sandbox = try BrokerSandbox()
+        defer { sandbox.cleanUp() }
+        let custodyFile = sandbox.custodyFile
+        let socketPath  = sandbox.makeSocketPath()
 
         let server = try FakeVaultwardenServer(
             clientID:       Self.fixtureClientID,
@@ -47,25 +48,11 @@ struct VaultCustodyE2ETests {
         try await server.start()
         defer { server.stop() }
 
-        let binaryPath = try Self.resolveBinary()
-        let baseEnv: [String: String] = [
-            "SHIKKI_E2E_CLIENT_ID":     Self.fixtureClientID,
-            "SHIKKI_E2E_CLIENT_SECRET": Self.fixtureClientSecret,
-            "SHIKKI_E2E_VAULT_URL":     "http://127.0.0.1:\(server.port)",
-            "SHIKKI_BROKER_SOCKET":     socketPath,
-            "SHIKKI_E2E_CUSTODY_FILE":  custodyFile,
-            "HOME":                     NSHomeDirectory(),
-            "PATH":                     "/usr/bin:/bin:/usr/local/bin",
-        ]
+        let binaryPath = try await Self.resolveBinary()
+        let baseEnv = sandbox.brokerEnvironment(clientID: Self.fixtureClientID, clientSecret: Self.fixtureClientSecret, vaultPort: server.port, socketPath: socketPath)
 
         // ── Launch broker1 ──────────────────────────────────────────────────
-        let broker1 = Process()
-        broker1.executableURL  = URL(fileURLWithPath: binaryPath)
-        broker1.arguments      = ["--dry-run", "--socket", socketPath]
-        broker1.environment    = baseEnv
-        broker1.standardOutput = FileHandle.nullDevice
-        broker1.standardError  = FileHandle.nullDevice
-        try broker1.run()
+        let broker1 = try sandbox.launchBroker(binaryPath: binaryPath, socketPath: socketPath, environment: baseEnv)
         try await waitForSocket(socketPath, timeout: 15)
 
         let client1 = ProductionBrokerClient(socket: SocketConnection(socketPath: socketPath))
@@ -94,14 +81,8 @@ struct VaultCustodyE2ETests {
         try? FileManager.default.removeItem(atPath: socketPath)
 
         // ── Launch broker2 on same custody file ────────────────────────────
-        let broker2 = Process()
-        broker2.executableURL  = URL(fileURLWithPath: binaryPath)
-        broker2.arguments      = ["--dry-run", "--socket", socketPath]
-        broker2.environment    = baseEnv
-        broker2.standardOutput = FileHandle.nullDevice
-        broker2.standardError  = FileHandle.nullDevice
+        let broker2 = try sandbox.launchBroker(binaryPath: binaryPath, socketPath: socketPath, environment: baseEnv)
         defer { broker2.terminate() }
-        try broker2.run()
         try await waitForSocket(socketPath, timeout: 15)
 
         let client2 = ProductionBrokerClient(socket: SocketConnection(socketPath: socketPath))
@@ -118,10 +99,10 @@ struct VaultCustodyE2ETests {
 
     @Test("T-03: vault.lock clears memory and custody file; restart sees locked vault")
     func test_T03_lockClearsMemoryAndStore() async throws {
-        let tmpDir = makeTmpDir()
-        defer { try? FileManager.default.removeItem(atPath: tmpDir) }
-        let custodyFile = (tmpDir as NSString).appendingPathComponent("vault.key")
-        let socketPath  = (tmpDir as NSString).appendingPathComponent("broker.sock")
+        let sandbox = try BrokerSandbox()
+        defer { sandbox.cleanUp() }
+        let custodyFile = sandbox.custodyFile
+        let socketPath  = sandbox.makeSocketPath()
 
         let server = try FakeVaultwardenServer(
             clientID:       Self.fixtureClientID,
@@ -132,24 +113,10 @@ struct VaultCustodyE2ETests {
         try await server.start()
         defer { server.stop() }
 
-        let binaryPath = try Self.resolveBinary()
-        let env: [String: String] = [
-            "SHIKKI_E2E_CLIENT_ID":     Self.fixtureClientID,
-            "SHIKKI_E2E_CLIENT_SECRET": Self.fixtureClientSecret,
-            "SHIKKI_E2E_VAULT_URL":     "http://127.0.0.1:\(server.port)",
-            "SHIKKI_BROKER_SOCKET":     socketPath,
-            "SHIKKI_E2E_CUSTODY_FILE":  custodyFile,
-            "HOME":                     NSHomeDirectory(),
-            "PATH":                     "/usr/bin:/bin:/usr/local/bin",
-        ]
+        let binaryPath = try await Self.resolveBinary()
+        let env = sandbox.brokerEnvironment(clientID: Self.fixtureClientID, clientSecret: Self.fixtureClientSecret, vaultPort: server.port, socketPath: socketPath)
 
-        let broker1 = Process()
-        broker1.executableURL  = URL(fileURLWithPath: binaryPath)
-        broker1.arguments      = ["--dry-run", "--socket", socketPath]
-        broker1.environment    = env
-        broker1.standardOutput = FileHandle.nullDevice
-        broker1.standardError  = FileHandle.nullDevice
-        try broker1.run()
+        let broker1 = try sandbox.launchBroker(binaryPath: binaryPath, socketPath: socketPath, environment: env)
         try await waitForSocket(socketPath, timeout: 15)
         defer { broker1.terminate() }
 
@@ -187,14 +154,8 @@ struct VaultCustodyE2ETests {
         try await waitForSocketGone(socketPath, timeout: 5)
         try? FileManager.default.removeItem(atPath: socketPath)
 
-        let broker2 = Process()
-        broker2.executableURL  = URL(fileURLWithPath: binaryPath)
-        broker2.arguments      = ["--dry-run", "--socket", socketPath]
-        broker2.environment    = env
-        broker2.standardOutput = FileHandle.nullDevice
-        broker2.standardError  = FileHandle.nullDevice
+        let broker2 = try sandbox.launchBroker(binaryPath: binaryPath, socketPath: socketPath, environment: env)
         defer { broker2.terminate() }
-        try broker2.run()
         try await waitForSocket(socketPath, timeout: 15)
 
         let client2 = ProductionBrokerClient(socket: SocketConnection(socketPath: socketPath))
@@ -209,10 +170,10 @@ struct VaultCustodyE2ETests {
 
     @Test("T-06: master password is never written to any file in the test directory")
     func test_T06_masterPasswordIsNeverWritten() async throws {
-        let tmpDir = makeTmpDir()
-        defer { try? FileManager.default.removeItem(atPath: tmpDir) }
-        let custodyFile = (tmpDir as NSString).appendingPathComponent("vault.key")
-        let socketPath  = (tmpDir as NSString).appendingPathComponent("broker.sock")
+        let sandbox = try BrokerSandbox()
+        defer { sandbox.cleanUp() }
+        let custodyFile = sandbox.custodyFile
+        let socketPath  = sandbox.makeSocketPath()
 
         let server = try FakeVaultwardenServer(
             clientID:       Self.fixtureClientID,
@@ -223,24 +184,10 @@ struct VaultCustodyE2ETests {
         try await server.start()
         defer { server.stop() }
 
-        let binaryPath = try Self.resolveBinary()
-        let env: [String: String] = [
-            "SHIKKI_E2E_CLIENT_ID":     Self.fixtureClientID,
-            "SHIKKI_E2E_CLIENT_SECRET": Self.fixtureClientSecret,
-            "SHIKKI_E2E_VAULT_URL":     "http://127.0.0.1:\(server.port)",
-            "SHIKKI_BROKER_SOCKET":     socketPath,
-            "SHIKKI_E2E_CUSTODY_FILE":  custodyFile,
-            "HOME":                     NSHomeDirectory(),
-            "PATH":                     "/usr/bin:/bin:/usr/local/bin",
-        ]
+        let binaryPath = try await Self.resolveBinary()
+        let env = sandbox.brokerEnvironment(clientID: Self.fixtureClientID, clientSecret: Self.fixtureClientSecret, vaultPort: server.port, socketPath: socketPath)
 
-        let broker = Process()
-        broker.executableURL  = URL(fileURLWithPath: binaryPath)
-        broker.arguments      = ["--dry-run", "--socket", socketPath]
-        broker.environment    = env
-        broker.standardOutput = FileHandle.nullDevice
-        broker.standardError  = FileHandle.nullDevice
-        try broker.run()
+        let broker = try sandbox.launchBroker(binaryPath: binaryPath, socketPath: socketPath, environment: env)
         try await waitForSocket(socketPath, timeout: 15)
         defer { broker.terminate() }
 
@@ -254,9 +201,9 @@ struct VaultCustodyE2ETests {
         // BR-01: the password must NEVER be written to any file.
         let password = Self.fixturePassword
         var violatingPaths: [String] = []
-        let enumerator = FileManager.default.enumerator(atPath: tmpDir)
+        let enumerator = FileManager.default.enumerator(atPath: sandbox.home)
         while let name = enumerator?.nextObject() as? String {
-            let path = (tmpDir as NSString).appendingPathComponent(name)
+            let path = (sandbox.home as NSString).appendingPathComponent(name)
             var isDir: ObjCBool = false
             FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
             guard !isDir.boolValue else { continue }
@@ -282,17 +229,6 @@ struct VaultCustodyE2ETests {
 
     // MARK: - Helpers
 
-    private func makeTmpDir() -> String {
-        // Use /tmp directly — NSTemporaryDirectory() expands to
-        // /var/folders/.../T/ which can produce paths near the 104-char
-        // Unix domain socket limit on macOS.
-        let path = "/tmp/shi-custody-e2e-\(UUID().uuidString.prefix(8))"
-        try? FileManager.default.createDirectory(
-            atPath: path, withIntermediateDirectories: true
-        )
-        return path
-    }
-
     private func waitForSocket(_ path: String, timeout: TimeInterval) async throws {
         // Delegates to the shared helper that serialises broker process startups
         // across all E2E suites via BrokerProcessGate, preventing socket-wait
@@ -309,17 +245,15 @@ struct VaultCustodyE2ETests {
         // Not fatal — caller cleans up manually.
     }
 
-    static func resolveBinary() throws -> String {
+    static func resolveBinary() async throws -> String {
         let cwd = FileManager.default.currentDirectoryPath
         let path = (cwd as NSString).appendingPathComponent(".build/debug/shi-secrets-brokerd")
         if !FileManager.default.fileExists(atPath: path) {
-            let build = Process()
-            build.executableURL     = URL(fileURLWithPath: "/usr/bin/swift")
-            build.arguments         = ["build", "--product", "shi-secrets-brokerd"]
-            build.currentDirectoryURL = URL(fileURLWithPath: cwd)
-            build.standardOutput    = FileHandle.nullDevice
-            try build.run()
-            build.waitUntilExit()
+            // ShellKit, not a raw Process: timeout + process-group escalation.
+            _ = try await TimedShellExecutor().run(
+                ["swift", "build", "--product", "shi-secrets-brokerd"],
+                cwd: cwd, env: nil, timeout: 900, stdin: nil
+            )
         }
         guard FileManager.default.fileExists(atPath: path) else {
             throw CustodyE2EError.binaryMissing(path)

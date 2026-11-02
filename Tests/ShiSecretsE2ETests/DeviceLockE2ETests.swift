@@ -34,10 +34,10 @@ struct DeviceLockE2ETests {
 
     @Test("T-02: device lock drops key within 2 s; device unlock restores from custody without password")
     func test_T02_deviceLockDropsKeyWithin2s_unlockRestoresFromCustody() async throws {
-        let tmpDir = makeTmpDir()
-        defer { try? FileManager.default.removeItem(atPath: tmpDir) }
-        let custodyFile = (tmpDir as NSString).appendingPathComponent("vault.key")
-        let socketPath  = (tmpDir as NSString).appendingPathComponent("broker.sock")
+        let sandbox = try BrokerSandbox()
+        defer { sandbox.cleanUp() }
+        let custodyFile = sandbox.custodyFile
+        let socketPath  = sandbox.makeSocketPath()
 
         let server = try FakeVaultwardenServer(
             clientID:       Self.fixtureClientID,
@@ -48,25 +48,11 @@ struct DeviceLockE2ETests {
         try await server.start()
         defer { server.stop() }
 
-        let binaryPath = try VaultCustodyE2ETests.resolveBinary()
-        let env: [String: String] = [
-            "SHIKKI_E2E_CLIENT_ID":     Self.fixtureClientID,
-            "SHIKKI_E2E_CLIENT_SECRET": Self.fixtureClientSecret,
-            "SHIKKI_E2E_VAULT_URL":     "http://127.0.0.1:\(server.port)",
-            "SHIKKI_BROKER_SOCKET":     socketPath,
-            "SHIKKI_E2E_CUSTODY_FILE":  custodyFile,
-            "HOME":                     NSHomeDirectory(),
-            "PATH":                     "/usr/bin:/bin:/usr/local/bin",
-        ]
+        let binaryPath = try await VaultCustodyE2ETests.resolveBinary()
+        let env = sandbox.brokerEnvironment(clientID: Self.fixtureClientID, clientSecret: Self.fixtureClientSecret, vaultPort: server.port, socketPath: socketPath)
 
         // ── Launch broker in --dry-run mode ────────────────────────────────
-        let broker = Process()
-        broker.executableURL  = URL(fileURLWithPath: binaryPath)
-        broker.arguments      = ["--dry-run", "--socket", socketPath]
-        broker.environment    = env
-        broker.standardOutput = FileHandle.nullDevice
-        broker.standardError  = FileHandle.nullDevice
-        try broker.run()
+        let broker = try sandbox.launchBroker(binaryPath: binaryPath, socketPath: socketPath, environment: env)
         defer {
             broker.terminate()
             try? FileManager.default.removeItem(atPath: socketPath)
@@ -139,14 +125,6 @@ struct DeviceLockE2ETests {
     }
 
     // MARK: - Helpers
-
-    private func makeTmpDir() -> String {
-        let path = "/tmp/shi-devlock-e2e-\(UUID().uuidString.prefix(8))"
-        try? FileManager.default.createDirectory(
-            atPath: path, withIntermediateDirectories: true
-        )
-        return path
-    }
 
     private func waitForSocket(_ path: String, timeout: TimeInterval) async throws {
         // Delegates to the shared helper that serialises broker startups via

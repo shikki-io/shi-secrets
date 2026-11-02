@@ -30,6 +30,10 @@ let package = Package(
         // TEST-ONLY: HTTP server for FakeVaultwardenServer in ShiSecretsE2ETests.
         // Never linked into the broker binary or any library product.
         .package(url: "https://github.com/vapor/vapor.git", from: "4.99.0"),
+        // Subprocess primitives (timeouts, process groups) — no raw Process in kit or tests.
+        .package(url: "https://github.com/shikki-io/ShellKit.git", from: "0.4.0"),
+        // TEST-ONLY: TestScratch, the fleet's test-path SSoT (ShikkiMCP#10 review).
+        .package(url: "https://github.com/FJ-Studios/CoreKit.git", from: "0.9.2"),
     ],
     targets: [
         // MARK: - Core library
@@ -37,6 +41,7 @@ let package = Package(
             name: "ShiSecretsKit",
             dependencies: [
                 .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "ShellKit", package: "ShellKit"),
             ],
             exclude: [
                 "WIRE_FORMAT.md",
@@ -111,7 +116,10 @@ let package = Package(
         ),
         .testTarget(
             name: "ShiSecretsKitTests",
-            dependencies: ["ShiSecretsKit"]
+            dependencies: [
+                "ShiSecretsKit",
+                .product(name: "CoreKitTestSupport", package: "CoreKit"),
+            ]
         ),
         .testTarget(
             name: "ShiSecretsDriversTests",
@@ -159,6 +167,8 @@ let package = Package(
                 "ShiSecretsClient",
                 "ShiSecretsDrivers",
                 "ShiSecretsKit",
+                .product(name: "ShellKit", package: "ShellKit"),
+                .product(name: "CoreKitTestSupport", package: "CoreKit"),
                 // Vapor: powers FakeVaultwardenServer — test-only, loopback TCP.
                 .product(name: "Vapor", package: "vapor"),
             ]

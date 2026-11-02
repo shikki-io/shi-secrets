@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import CoreKitTestSupport
 import Testing
 @testable import ShiSecretsKit
 
@@ -34,13 +35,12 @@ struct SystemdCredsCustodyTests {
         )
     }
 
-    /// Temporary directory for blob files.
-    private func makeTmpDir() -> String {
-        let path = "/tmp/shi-systemd-e2e-\(UUID().uuidString.prefix(8))"
-        try? FileManager.default.createDirectory(
-            atPath: path, withIntermediateDirectories: true
-        )
-        return path
+    /// Test-path SSoT: CoreKitTestSupport's package-rooted scratch, never `/tmp`.
+    private let scratch = TestScratch.forPackage()
+
+    /// Scratch directory for blob files (under the package `.tests/` root).
+    private func makeTmpDir() throws -> String {
+        try scratch.makeScratchDir(scope: "systemd-creds").path
     }
 
     /// A SystemdCredsCustody backed by the fake runner (no subprocess).
@@ -63,9 +63,9 @@ struct SystemdCredsCustodyTests {
         "T-05: SystemdCredsCustody throws tpmUnavailable(reason:) when TPM is absent",
         .tags(.vaultLock)
     )
-    func test_T05_noTPMRefusesAndNamesTheReason() async {
-        let tmpDir = makeTmpDir()
-        defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+    func test_T05_noTPMRefusesAndNamesTheReason() async throws {
+        let tmpDir = try makeTmpDir()
+        defer { try? scratch.removeScratchDir(URL(fileURLWithPath: tmpDir)) }
 
         #if os(Linux)
         // On Linux: inject a runner that simulates TPM2 absence.
@@ -122,8 +122,8 @@ struct SystemdCredsCustodyTests {
 
     @Test("round-trip: store then load returns the original key pair")
     func test_roundTrip() async throws {
-        let tmpDir = makeTmpDir()
-        defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+        let tmpDir = try makeTmpDir()
+        defer { try? scratch.removeScratchDir(URL(fileURLWithPath: tmpDir)) }
 
         #if os(Linux)
         let custody = fakeCustody(dir: tmpDir)
@@ -156,8 +156,8 @@ struct SystemdCredsCustodyTests {
     @Test("clear() removes the blob file when present (Linux only)")
     func test_clear_removesBlobFile() async throws {
         #if os(Linux)
-        let tmpDir = makeTmpDir()
-        defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+        let tmpDir = try makeTmpDir()
+        defer { try? scratch.removeScratchDir(URL(fileURLWithPath: tmpDir)) }
 
         let custody = fakeCustody(dir: tmpDir)
         let blobPath = (tmpDir as NSString).appendingPathComponent("vault.cred")
@@ -171,8 +171,8 @@ struct SystemdCredsCustodyTests {
         #expect(!FileManager.default.fileExists(atPath: blobPath), "blob must be removed after clear")
         #else
         // Non-Linux: clear is a no-op; no file is ever written.
-        let tmpDir = makeTmpDir()
-        defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+        let tmpDir = try makeTmpDir()
+        defer { try? scratch.removeScratchDir(URL(fileURLWithPath: tmpDir)) }
         let custody = fakeCustody(dir: tmpDir)
         await #expect(throws: Never.self) { try await custody.clear() }
         #endif
@@ -183,8 +183,8 @@ struct SystemdCredsCustodyTests {
     @Test("load() returns nil when no blob file exists")
     func test_load_returnsNilWhenNoBlobFile() async throws {
         #if os(Linux)
-        let tmpDir = makeTmpDir()
-        defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+        let tmpDir = try makeTmpDir()
+        defer { try? scratch.removeScratchDir(URL(fileURLWithPath: tmpDir)) }
         let custody = fakeCustody(dir: tmpDir)
         let result = try await custody.load()
         #expect(result == nil, "load must return nil when no blob file is present")
@@ -197,9 +197,9 @@ struct SystemdCredsCustodyTests {
     // MARK: - custodyDescription
 
     @Test("custodyDescription identifies the backend")
-    func test_custodyDescription() {
-        let tmpDir = makeTmpDir()
-        defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+    func test_custodyDescription() throws {
+        let tmpDir = try makeTmpDir()
+        defer { try? scratch.removeScratchDir(URL(fileURLWithPath: tmpDir)) }
         let custody = fakeCustody(dir: tmpDir)
         let desc = custody.custodyDescription
         #if os(Linux)
