@@ -463,10 +463,21 @@ public actor BrokerWireDispatcher {
 
         // A secret with no driver for its vendor is a clear refusal — not a fake success.
         guard let driver = await daemon.drivers.resolve(vendor: vendorName) else {
+            // Surface an actionable hint when the entry has no `scope` field — the most
+            // common operator mistake. The fallback `scope = params.name` produces a
+            // vendor name that matches no registered driver.
+            let noScopeHint: String
+            if vaultFields["scope"] == nil {
+                noScopeHint = " The vault entry '\(params.name)' has no 'scope' field. " +
+                              "Add a 'scope' field with the vendor prefix, " +
+                              "e.g. \"brevo/\(params.name)\" or \"github/\(params.name)\", then retry."
+            } else {
+                noScopeHint = " This secret cannot be rotated automatically."
+            }
             return WireResponse(id: request.id, error: WireError(
                 code: WireErrorCode.denied,
                 message: "secret.rotate: no driver registered for vendor '\(vendorName)' " +
-                         "(scope '\(entry.scope)'). This secret cannot be rotated automatically."
+                         "(scope '\(entry.scope)').\(noScopeHint)"
             ))
         }
 
@@ -482,20 +493,47 @@ public actor BrokerWireDispatcher {
                 // oldJtiSuffix: last 4 hex chars of the rotation-event UUID (display only).
                 // The engine has no per-entry JTI; this gives the CLI a unique display token.
                 let suffix = String(rotationId.replacingOccurrences(of: "-", with: "").prefix(4))
-                // invalidAt: the moment the old credential was replaced = lastRotated on the
-                // updated entry (applyRotation sets this to clock.now()).
-                //
+                let invalidAtFormatter = ISO8601DateFormatter()
+                invalidAtFormatter.formatOptions = [.withInternetDateTime]
+
+                // Attempt explicit invalidation of the previous credential.
+                // A failure here is not a rotation failure — the new credential is already
+                // live and written to the vault. Surface a warning so the operator can
+                // manually clean up the stale credential via the vendor console.
+                var invalidationWarning: String? = nil
+                do {
+                    try await driver.invalidate(previous: entry)
+                } catch {
+                    invalidationWarning = "rotated at vendor but old credential NOT invalidated — " +
+                                          "old credential may still be live. Revoke it manually via " +
+                                          "the vendor console. Invalidation error: \(error)"
+                    _ = try? await daemon.audit.append(.init(
+                        ts: Date(),
+                        tokenJti: "wire-invalidate-\(rotationId.prefix(8))",
+                        callerUid: Int32(bitPattern: peerUid),
+                        callerTransport: .unix,
+                        secretName: String(params.name.prefix(AuditWriter.maxSecretNameLength)),
+                        op: .rotate,
+                        allow: .deny,
+                        reason: .rotationFailed,
+                        llmTouched: false
+                    ))
+                }
+
                 // RotationResult lives in ShiSecretsClient (not imported here by design).
                 // Build the wire payload as a JSONValue object that ProductionBrokerClient
                 // will decode with decodeResult(_:as:RotationResult.self) on its side.
                 // Field names must match RotationResult's CodingKeys exactly.
-                let invalidAtFormatter = ISO8601DateFormatter()
-                invalidAtFormatter.formatOptions = [.withInternetDateTime]
-                let resultJSON: JSONValue = .object([
+                var resultObj: [String: JSONValue] = [
                     "secretName":   .string(rotated.name),
                     "oldJtiSuffix": .string(suffix),
                     "invalidAt":    .string(invalidAtFormatter.string(from: rotated.lastRotated)),
-                ])
+                ]
+                if let warning = invalidationWarning {
+                    resultObj["invalidationWarning"] = .string(warning)
+                }
+                let resultJSON: JSONValue = .object(resultObj)
+
                 // CRIT-2: audit every mutation.
                 _ = try? await daemon.audit.append(.init(
                     ts: Date(),

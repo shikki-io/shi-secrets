@@ -69,18 +69,17 @@ struct DriverWoodpeckerTests {
 
     // MARK: - T-WPD-03
 
-    @Test("T-WPD-03: rotate revokes old token + mints new in single atomic op")
-    func test_rotate_revokesOld_mintsNew_atomically() async {
+    @Test("T-WPD-03: rotate mints new token + writes back; revoke is caller's responsibility")
+    func test_rotate_mintsNew_writesBack_noRevokeInsideRotate() async {
+        // rotate() must no longer call DELETE itself — that is the caller's
+        // responsibility (BrokerWireDispatch calls invalidate(previous:) after
+        // applyRotation). This test verifies that rotate() only issues POST
+        // (mint) and does NOT issue DELETE.
         let http = RecordingTransport()
         let rawToken = String(repeating: "b", count: 64)
         await http.queue(
             match: .init(method: "POST", urlContains: "/api/user/token"),
             response: DriverHTTPResponse(status: 201, body: mintResponseBody(id: "tok-new", token: rawToken, ttl: 3600))
-        )
-        // Queue a success for the DELETE of the previous token.
-        await http.queue(
-            match: .init(method: "DELETE", urlContains: "/api/user/token/"),
-            response: DriverHTTPResponse(status: 204)
         )
         let bw = RecordingBWClient()
         await bw.seedGet(name: "WOODPECKER_ADMIN_TOKEN", fields: ["value": "fake-wdpck-admin-token"])
@@ -95,10 +94,53 @@ struct DriverWoodpeckerTests {
         #expect(!writes.isEmpty)
         let firstFields = writes.first?.fields ?? [:]
         #expect(firstFields["token"] != nil || firstFields["value"] != nil)
-        // Both POST (mint) + DELETE (revoke) must have been issued.
+        // Only POST (mint) must have been issued. DELETE is NOT sent by rotate().
         let requests = await http.requests()
         #expect(requests.contains(where: { $0.method == "POST" && $0.url.contains("/api/user/token") }))
-        #expect(requests.contains(where: { $0.method == "DELETE" }))
+        #expect(!requests.contains(where: { $0.method == "DELETE" }),
+                "rotate() must not DELETE — revoke is invalidate(previous:)'s job")
+    }
+
+    // MARK: - T-WPD-06
+
+    @Test("T-WPD-06: invalidate issues DELETE /api/user/token/:id and succeeds on 204")
+    func test_invalidate_issuesDELETE_succeedsOn204() async throws {
+        let http = RecordingTransport()
+        await http.queue(
+            match: .init(method: "DELETE", urlContains: "/api/user/token/"),
+            response: DriverHTTPResponse(status: 204)
+        )
+        let driver = DriverWoodpecker(transport: http)
+        let entry = makeWoodpeckerEntry()
+
+        try await driver.invalidate(previous: entry)
+
+        let requests = await http.requests()
+        #expect(
+            requests.contains(where: { $0.method == "DELETE" && $0.url.contains("/api/user/token/") }),
+            "invalidate must issue DELETE /api/user/token/:id"
+        )
+    }
+
+    // MARK: - T-WPD-07
+
+    @Test("T-WPD-07: invalidate throws on non-2xx so the caller can surface invalidationWarning")
+    func test_invalidate_nonTwoXX_throws() async {
+        let http = RecordingTransport()
+        await http.queue(
+            match: .init(method: "DELETE", urlContains: "/api/user/token/"),
+            response: DriverHTTPResponse(status: 500)
+        )
+        let driver = DriverWoodpecker(transport: http)
+        let entry = makeWoodpeckerEntry()
+
+        var threw = false
+        do {
+            try await driver.invalidate(previous: entry)
+        } catch {
+            threw = true
+        }
+        #expect(threw, "invalidate must throw on non-2xx so callers can surface invalidationWarning")
     }
 
     // MARK: - T-WPD-04

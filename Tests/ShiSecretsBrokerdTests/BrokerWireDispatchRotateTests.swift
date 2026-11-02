@@ -23,14 +23,34 @@ import Glibc
 // All tests inject mock drivers; no network or real Vaultwarden required.
 // All tests use Swift Testing style (#expect, @Test, @Suite).
 
+/// Sentinel error thrown by MockRotationDriver.invalidate when shouldInvalidateFail is true.
+private enum MockDriverError: Swift.Error, Sendable {
+    case invalidateFailure
+}
+
 /// Deterministic mock driver for rotate tests.
 private struct MockRotationDriver: SecretRotationDriver {
     let vendor: String
     let outcome: RotationOutcome
+    /// When true, `invalidate(previous:)` throws `DriverHTTPError.transportFailed`.
+    let shouldInvalidateFail: Bool
+
+    init(vendor: String, outcome: RotationOutcome, shouldInvalidateFail: Bool = false) {
+        self.vendor = vendor
+        self.outcome = outcome
+        self.shouldInvalidateFail = shouldInvalidateFail
+    }
 
     func rotate(entry: VaultEntryRef, trigger: RotationTrigger) async -> RotationOutcome {
         _ = entry; _ = trigger
         return outcome
+    }
+
+    func invalidate(previous: VaultEntryRef) async throws {
+        _ = previous
+        if shouldInvalidateFail {
+            throw MockDriverError.invalidateFailure
+        }
     }
 }
 
@@ -56,6 +76,10 @@ struct BrokerWireDispatchRotateTests {
         outcome: RotationOutcome = .rotated,
         seedEntry: String? = nil,
         seedScope: String? = nil,
+        /// Extra entries to seed directly into the bwClient (name → fields).
+        bwSeedEntries: [String: [String: String]] = [:],
+        /// When true the mock driver's `invalidate` throws (TR-09).
+        shouldInvalidateFail: Bool = false,
         systemScopePolicy: ScopePolicy? = nil,
         ownerUid: UInt32 = UInt32(geteuid())
     ) async throws -> (
@@ -69,7 +93,7 @@ struct BrokerWireDispatchRotateTests {
         let seams = SeamsWriter()
         let registry = TokenRegistry()
         let drivers = DriverRegistry()
-        await drivers.register(MockRotationDriver(vendor: vendor, outcome: outcome))
+        await drivers.register(MockRotationDriver(vendor: vendor, outcome: outcome, shouldInvalidateFail: shouldInvalidateFail))
         let engine = RotationEngine(
             drivers: drivers, audit: audit, seams: seams, registry: registry
         )
@@ -106,6 +130,11 @@ struct BrokerWireDispatchRotateTests {
                 name: name,
                 fields: ["scope": scope, "value": "test-credential"]
             )
+        }
+        // Seed any explicit bwClient entries (used by TR-08 and similar tests that
+        // need custom vault content without a corresponding engine seed).
+        for (name, fields) in bwSeedEntries {
+            await bwClient.seedFakeEntry(name: name, fields: fields)
         }
         let minter = TokenMinter(
             registry: registry,
@@ -312,5 +341,82 @@ struct BrokerWireDispatchRotateTests {
         #expect(resp.error != nil, "TR-07: expected error for missing params")
         #expect(resp.error?.code == WireErrorCode.invalidParams,
                 "TR-07: missing name param must return invalidParams")
+    }
+
+    // MARK: - TR-08: vault entry exists but has no scope field
+
+    @Test("TR-08: vault entry has no 'scope' field → denied error with actionable hint")
+    func test_rotate_noScopeField_returnsDeniedWithHint() async throws {
+        // A vault entry with only a "value" field and no "scope" field causes the
+        // vendor fallback to use the entry name itself. No driver is registered under
+        // that name, so the result must be a clear `denied` error that tells the
+        // operator how to fix it (add a `scope` field).
+        let (dispatcher, _, _, socket) = try await makeDispatcher(
+            vendor: "ovh",      // driver registered under "ovh"
+            outcome: .rotated,
+            // No seedEntry — engine is empty.
+            bwSeedEntries: ["MY_API_KEY": ["value": "some-api-key"]]  // no scope field
+        )
+        defer { Task { await socket.shutdown() } }
+
+        let req = WireRequest(
+            method: "secret.rotate",
+            params: .object(["name": .string("MY_API_KEY")]),
+            id: "tr-08"
+        )
+        let resp = await dispatcher.dispatch(req, peerUid: UInt32(geteuid()))
+
+        #expect(resp.error != nil, "TR-08: expected error when vault entry has no scope field")
+        #expect(resp.error?.code == WireErrorCode.denied,
+                "TR-08: a missing driver must be denied, not a fake success")
+        // Error message must contain the actionable hint about adding a 'scope' field.
+        let message = resp.error?.message ?? ""
+        #expect(message.contains("scope"), "TR-08: error must mention the 'scope' field")
+    }
+
+    // MARK: - TR-09: rotation succeeded but invalidate threw
+
+    @Test("TR-09: invalidate throws → rotation succeeds with invalidationWarning field in result")
+    func test_rotate_invalidateThrows_succeedsWithWarning() async throws {
+        // The rotation itself succeeds (new credential is live) but the driver's
+        // invalidate() method throws. The dispatcher must:
+        //   1. Still return a successful result (result != nil, error == nil).
+        //   2. Include an "invalidationWarning" field in the result JSON.
+        //   3. Write a deny audit row with reason: .rotationFailed for the invalidation failure.
+        let (dispatcher, _, audit, socket) = try await makeDispatcher(
+            vendor: "ovh",
+            outcome: .rotated,
+            seedEntry: "OVH_APP_KEY",
+            seedScope: "ovh/OVH_APP_KEY",
+            shouldInvalidateFail: true
+        )
+        defer { Task { await socket.shutdown() } }
+
+        let req = WireRequest(
+            method: "secret.rotate",
+            params: .object(["name": .string("OVH_APP_KEY")]),
+            id: "tr-09"
+        )
+        let resp = await dispatcher.dispatch(req, peerUid: UInt32(geteuid()))
+
+        // Rotation succeeded — result must be present, error must be nil.
+        #expect(resp.error == nil, "TR-09: rotation should succeed even when invalidate throws")
+        guard let result = resp.result, case .object(let obj) = result else {
+            Issue.record("TR-09: result must be a JSON object")
+            return
+        }
+        #expect(obj["secretName"] != nil, "TR-09: secretName must be present")
+        // invalidationWarning must be present when invalidate threw.
+        guard case .string(let warning) = obj["invalidationWarning"] else {
+            Issue.record("TR-09: invalidationWarning must be a string in result when invalidate throws")
+            return
+        }
+        #expect(!warning.isEmpty, "TR-09: invalidationWarning must be non-empty")
+        // An audit deny row for the invalidation failure must exist.
+        let rows = await audit.all()
+        let denyRow = rows.first {
+            $0.op == .rotate && $0.allow == .deny && $0.reason == .rotationFailed
+        }
+        #expect(denyRow != nil, "TR-09: invalidation failure must write audit deny + rotationFailed")
     }
 }

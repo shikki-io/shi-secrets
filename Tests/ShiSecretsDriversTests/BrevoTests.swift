@@ -49,4 +49,46 @@ struct DriverBrevoTests {
         let writes = await bw.writes()
         #expect(writes.isEmpty)
     }
+
+    @Test("invalidate issues DELETE and succeeds on 204")
+    func test_driver_brevo_invalidate_issuesDELETE_succeedsOn204() async throws {
+        let http = RecordingTransport()
+        await http.queue(
+            match: .init(method: "DELETE", urlContains: "/v3/senders/api-keys/"),
+            response: DriverHTTPResponse(status: 204)
+        )
+        let bw = RecordingBWClient()
+        await bw.seedGet(name: "BREVO_API_KEY", fields: ["value": "fake-admin-brevo-key"])
+        let driver = DriverBrevo(transport: http, bwClient: bw)
+        let entry = makeEntry(vendor: "brevo", name: "BREVO_API_KEY")
+
+        try await driver.invalidate(previous: entry)
+
+        let requests = await http.requests()
+        #expect(
+            requests.contains(where: { $0.method == "DELETE" && $0.url.contains("/v3/senders/api-keys/") }),
+            "invalidate must issue DELETE /v3/senders/api-keys/:name"
+        )
+    }
+
+    @Test("invalidate throws on non-2xx so callers can surface invalidationWarning")
+    func test_driver_brevo_invalidate_nonTwoXX_throws() async {
+        let http = RecordingTransport()
+        await http.queue(
+            match: .init(method: "DELETE", urlContains: "/v3/senders/api-keys/"),
+            response: DriverHTTPResponse(status: 500)
+        )
+        let bw = RecordingBWClient()
+        await bw.seedGet(name: "BREVO_API_KEY", fields: ["value": "fake-admin-brevo-key"])
+        let driver = DriverBrevo(transport: http, bwClient: bw)
+        let entry = makeEntry(vendor: "brevo", name: "BREVO_API_KEY")
+
+        var threw = false
+        do {
+            try await driver.invalidate(previous: entry)
+        } catch {
+            threw = true
+        }
+        #expect(threw, "invalidate must throw on non-2xx response")
+    }
 }

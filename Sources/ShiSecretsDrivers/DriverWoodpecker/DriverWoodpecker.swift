@@ -20,7 +20,8 @@ import ShiSecretsKit
 // Sequence (rotate):
 //   1. POST /api/user/token      → mint new token
 //   2. write-back via BWClient
-//   3. DELETE /api/user/token/:id → revoke previous token (atomic in op)
+//   (invalidation of the previous token is done by the caller
+//    via invalidate(previous:) — never inside rotate() itself)
 //
 // Token constraints:
 //   - TTL hard-capped at 3600s (BR-A-03 / broker golden rule)
@@ -37,6 +38,15 @@ import ShiSecretsKit
 //   .invalidScope         — scope does not match "woodpecker:<repo>:<branch>"
 //   .vaultMisconfigured   — admin token absent or empty in BWClient vault
 //   .tokenTTLExceeded     — requested TTL > 3600s (hard cap)
+
+// MARK: - Typed Codable response models
+
+/// The JSON object Woodpecker returns on a successful POST /api/user/token.
+private struct WoodpeckerMintResponse: Decodable {
+    let id: String
+    let token: String
+    let ttl: Int?
+}
 
 // MARK: - Scope helpers
 
@@ -120,7 +130,9 @@ public struct DriverWoodpecker: SecretRotationDriver {
     ///   1. Resolve WOODPECKER_ADMIN_TOKEN from vault
     ///   2. Mint a new token (POST /api/user/token) with admin auth
     ///   3. Write back to vault via BWClient
-    ///   4. Revoke the previous token (DELETE /api/user/token/:id)
+    ///
+    /// Revocation of the previous token is the caller's responsibility —
+    /// BrokerWireDispatch calls `invalidate(previous:)` after applyRotation.
     ///
     /// Returns .rotated on success; .failed(reason:) on any transport or
     /// scope error so the rotation engine can log + enqueue retry.
@@ -149,9 +161,6 @@ public struct DriverWoodpecker: SecretRotationDriver {
                 ttl: Self.maxTokenTTL, adminToken: adminToken
             )
             try await bw.update(name: entry.name, fields: ["token": newToken.id, "value": newToken.id])
-            // Best-effort revoke of the previous token; swallow errors so a
-            // revoke failure cannot un-do an already-successful rotation.
-            _ = try? await revokeToken(id: entry.name)
             _ = trigger
             return .rotated
         } catch DriverError.invalidScope(let s) {
@@ -171,11 +180,12 @@ public struct DriverWoodpecker: SecretRotationDriver {
         repo: String, branch: String, ttl: Int, adminToken: String
     ) async throws -> (id: String, value: String, ttl: Int) {
         let effectiveTTL = min(ttl, Self.maxTokenTTL)
-        let body = try JSONSerialization.data(withJSONObject: [
+        let bodyObj: [String: Any] = [
             "repo":   repo,
             "branch": branch,
             "ttl":    effectiveTTL,
-        ])
+        ]
+        let body = try JSONSerialization.data(withJSONObject: bodyObj)
         let request = DriverHTTPRequest(
             method: "POST",
             url: serverURL + "/api/user/token",
@@ -189,40 +199,43 @@ public struct DriverWoodpecker: SecretRotationDriver {
         guard response.status == 200 || response.status == 201 else {
             throw DriverHTTPError.transportFailed(message: "woodpecker mint http \(response.status)")
         }
-        guard let json = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
-              let tokenId = json["id"] as? String,
-              let tokenValue = json["token"] as? String else {
-            throw DriverHTTPError.transportFailed(message: "woodpecker mint response malformed")
+        // Typed decode — fail loudly if the response is missing required fields
+        // so a decode error is not silently swallowed as a false success.
+        let decoded: WoodpeckerMintResponse
+        do {
+            decoded = try JSONDecoder().decode(WoodpeckerMintResponse.self, from: response.body)
+        } catch {
+            throw DriverHTTPError.transportFailed(message: "woodpecker mint response malformed: \(error)")
         }
-        let returnedTTL = (json["ttl"] as? Int) ?? effectiveTTL
+        let returnedTTL = decoded.ttl ?? effectiveTTL
         guard returnedTTL <= Self.maxTokenTTL else {
             throw DriverError.tokenTTLExceeded(requested: returnedTTL)
         }
-        return (id: tokenId, value: tokenValue, ttl: returnedTTL)
+        return (id: decoded.id, value: decoded.token, ttl: returnedTTL)
     }
 
-    /// Explicit invalidation (called by the rotation engine after applyRotation).
-    /// Issues DELETE /api/user/token/:id; swallows non-2xx so a revoke failure
-    /// cannot re-fail an already-successful rotation.
+    /// Explicit invalidation of the previous token.
+    /// Issues DELETE /api/user/token/:id and throws on transport failure
+    /// or non-2xx so the caller (BrokerWireDispatch) can surface an
+    /// invalidationWarning in the wire response.
     public func invalidate(previous: VaultEntryRef) async throws {
-        _ = try? await revokeToken(id: previous.name)
+        try await revokeToken(id: previous.name)
     }
 
     // MARK: - Mint + revoke primitives
 
-    /// Mints a new scoped CI token. TTL is hard-capped at `maxTokenTTL`.
-    /// Returns the raw token string on success; throws on transport / auth errors.
-    ///
-    /// Admin token is resolved from BWClient vault under "WOODPECKER_ADMIN_TOKEN".
-    /// It is NEVER accepted as a plaintext init parameter.
+    /// Mints a new scoped CI token without an admin auth header (testing / open-endpoint path).
+    /// TTL is hard-capped at `maxTokenTTL`.
+    /// Returns the token tuple on success; throws on transport / auth errors.
     @discardableResult
     public func mint(repo: String, branch: String, ttl: Int) async throws -> (id: String, value: String, ttl: Int) {
         let effectiveTTL = min(ttl, Self.maxTokenTTL)
-        let body = try JSONSerialization.data(withJSONObject: [
+        let bodyObj: [String: Any] = [
             "repo":   repo,
             "branch": branch,
             "ttl":    effectiveTTL,
-        ])
+        ]
+        let body = try JSONSerialization.data(withJSONObject: bodyObj)
         let request = DriverHTTPRequest(
             method: "POST",
             url: serverURL + "/api/user/token",
@@ -233,16 +246,18 @@ public struct DriverWoodpecker: SecretRotationDriver {
         guard response.status == 200 || response.status == 201 else {
             throw DriverHTTPError.transportFailed(message: "woodpecker mint http \(response.status)")
         }
-        guard let json = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
-              let tokenId = json["id"] as? String,
-              let tokenValue = json["token"] as? String else {
-            throw DriverHTTPError.transportFailed(message: "woodpecker mint response malformed")
+        // Typed decode — fail loudly if the response is missing required fields.
+        let decoded: WoodpeckerMintResponse
+        do {
+            decoded = try JSONDecoder().decode(WoodpeckerMintResponse.self, from: response.body)
+        } catch {
+            throw DriverHTTPError.transportFailed(message: "woodpecker mint response malformed: \(error)")
         }
-        let returnedTTL = (json["ttl"] as? Int) ?? effectiveTTL
+        let returnedTTL = decoded.ttl ?? effectiveTTL
         guard returnedTTL <= Self.maxTokenTTL else {
             throw DriverError.tokenTTLExceeded(requested: returnedTTL)
         }
-        return (id: tokenId, value: tokenValue, ttl: returnedTTL)
+        return (id: decoded.id, value: decoded.token, ttl: returnedTTL)
     }
 
     /// Lists active CI tokens for the given repo. Returns a snapshot of
@@ -275,12 +290,17 @@ public struct DriverWoodpecker: SecretRotationDriver {
 
     // MARK: - Private helpers
 
+    /// Revokes the token at the given id. Throws on transport error or non-2xx
+    /// so callers (invalidate) can surface failure rather than silently swallowing it.
     private func revokeToken(id: String) async throws {
         let request = DriverHTTPRequest(
             method: "DELETE",
             url: serverURL + "/api/user/token/\(id)",
             headers: [:]
         )
-        _ = try await transport.send(request)
+        let response = try await transport.send(request)
+        guard (200 ..< 300).contains(response.status) else {
+            throw DriverHTTPError.transportFailed(message: "woodpecker revoke http \(response.status)")
+        }
     }
 }
