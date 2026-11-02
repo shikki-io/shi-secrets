@@ -148,4 +148,26 @@ struct BrokerClientWireNameTests {
         let method = await brokerTask.value
         #expect(method == "secret.get", "get must send 'secret.get' wire name; got \(method ?? "nil")")
     }
+
+    // MARK: - TCP-WN-05: rotate sends "secret.rotate"
+
+    @Test("TCP-WN-05: rotate(name:) sends secret.rotate wire name")
+    func test_rotate_sendsSecretRotateWireName() async throws {
+        let path = Self.tmpSocketPath()
+        // Provide a valid RotationResult JSON so the client decode succeeds.
+        let rotateResult: JSONValue = .object([
+            "secretName":   .string("test-key"),
+            "oldJtiSuffix": .string("abcd"),
+            "invalidAt":    .string("2026-11-02T10:00:00Z"),
+        ])
+        let brokerTask = loopbackCapture(
+            path: path,
+            respondWith: WireResponse(id: "wn-05", result: rotateResult)
+        )
+        try await Task.sleep(nanoseconds: 10_000_000)
+        let client = ProductionBrokerClient(socket: SocketConnection(socketPath: path))
+        _ = try? await client.rotate(name: "test-key")
+        let method = await brokerTask.value
+        #expect(method == "secret.rotate", "rotate must send 'secret.rotate' wire name; got \(method ?? "nil")")
+    }
 }
