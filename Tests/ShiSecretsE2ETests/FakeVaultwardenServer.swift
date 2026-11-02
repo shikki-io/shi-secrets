@@ -219,26 +219,28 @@ final class FakeVaultwardenServer: @unchecked Sendable {
             )
         }
 
+        // Every /api route needs the token this server issued, like Vaultwarden.
+        let ciphers = app.grouped(BearerTokenMiddleware(expected: accessToken))
+            .grouped("api", "ciphers")
+
         // POST /api/ciphers
-        app.post("api", "ciphers") { req async throws -> Response in
+        ciphers.post { req async throws -> Response in
             try await capturedSelf.handleCreateCipher(req)
         }
 
-        // GET /api/ciphers
-        app.get("api", "ciphers") { req async throws -> Response in
+        // GET /api/ciphers: the list.
+        ciphers.get { _ async throws -> Response in
             try capturedSelf.handleListCiphers()
         }
 
         // GET /api/ciphers/:id
-        app.get("api", "ciphers", ":id") { req async throws -> Response in
-            let id = req.parameters.get("id") ?? ""
-            return try capturedSelf.handleGetCipher(id: id)
+        ciphers.get(":id") { req async throws -> Response in
+            try capturedSelf.handleGetCipher(id: req.parameters.require("id"))
         }
 
         // DELETE /api/ciphers/:id
-        app.delete("api", "ciphers", ":id") { req async throws -> Response in
-            let id = req.parameters.get("id") ?? ""
-            return try capturedSelf.handleDeleteCipher(id: id)
+        ciphers.delete(":id") { req async throws -> Response in
+            try capturedSelf.handleDeleteCipher(id: req.parameters.require("id"))
         }
     }
 
@@ -335,7 +337,12 @@ final class FakeVaultwardenServer: @unchecked Sendable {
     }
 
     private func handleDeleteCipher(id: String) throws -> Response {
-        _ = stateLock.withLock { _ciphers.removeValue(forKey: id) }
+        guard stateLock.withLock({ _ciphers.removeValue(forKey: id) }) != nil else {
+            return try Self.makeJSONResponse(
+                VWErrorBody(error: "cipher_not_found", error_description: nil),
+                status: .notFound
+            )
+        }
         return try Self.makeJSONResponse(VWEmpty())
     }
 
@@ -353,6 +360,20 @@ final class FakeVaultwardenServer: @unchecked Sendable {
             headers: headers,
             body: .init(data: data)
         )
+    }
+}
+
+// MARK: - Auth
+
+/// Refuses an `/api` request without `Authorization: Bearer <issued token>`.
+private struct BearerTokenMiddleware: AsyncMiddleware {
+    let expected: String
+
+    func respond(to request: Request, chainingTo next: AsyncResponder) async throws -> Response {
+        guard request.headers.bearerAuthorization?.token == expected else {
+            throw Abort(.unauthorized)
+        }
+        return try await next.respond(to: request)
     }
 }
 

@@ -114,6 +114,30 @@ struct ShiSecretsBrokerProcessE2E {
 
     // MARK: - Wrong password test
 
+    @Test("the fake server refuses a request without the Bearer token, and an unknown id")
+    func test_fakeServerEnforcesAuthAndIDs() async throws {
+        let (server, _, broker, socketPath) = try await Self.setup()
+        defer { broker.terminate(); server.stop() }
+        defer { try? FileManager.default.removeItem(atPath: socketPath) }
+
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = "127.0.0.1"
+        components.port = server.port
+        let ciphers = try #require(components.url)
+            .appendingPathComponent("api")
+            .appendingPathComponent("ciphers")
+
+        let (_, noToken) = try await URLSession.shared.data(from: ciphers)
+        #expect((noToken as? HTTPURLResponse)?.statusCode == 401)
+
+        var delete = URLRequest(url: ciphers.appendingPathComponent("no-such-id"))
+        delete.httpMethod = "DELETE"
+        delete.setValue("Bearer \(server.accessToken)", forHTTPHeaderField: "Authorization")
+        let (_, unknown) = try await URLSession.shared.data(for: delete)
+        #expect((unknown as? HTTPURLResponse)?.statusCode == 404)
+    }
+
     @Test("vault.unlock with wrong password returns error")
     func test_wrongPassword_returnsError() async throws {
         let (server, client, broker, socketPath) = try await Self.setup()
