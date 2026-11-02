@@ -16,7 +16,7 @@
 # .APP FOLLOW-UP (next milestone):
 #   Bundle the binary in a signed .app, register
 #   io.shikki.vault-key in the Apple Developer Portal under App ID
-#   eu.fj-studios.shikki.secrets-brokerd, obtain the provisioning profile, then
+#   io.shikki.secrets-brokerd, obtain the provisioning profile, then
 #   re-sign with:
 #     codesign --sign "$IDENTITY" \
 #              --entitlements Sources/ShiSecretsBrokerd/ShikkiSecretsBrokerd.entitlements \
@@ -102,11 +102,16 @@ fi
 
 echo "✓ shi-secrets-brokerd signed with team SH7MZH647S (no entitlements)"
 echo ""
-echo "Install and test:"
-echo "  cp $BINARY_PATH /usr/local/bin/shi-secrets-brokerd"
-echo "  shi-secrets-brokerd --dry-run --socket /tmp/test.sock &"
-echo "  shi secrets vault unlock --master-password <pw>"
-echo "  shi secrets vault status   # backend: 'memory only — ...'"
+echo "Install and restart (never overwrite a signed binary — SIGKILLs the running daemon):"
+echo "  1. Write to a new path, then rename atomically:"
+echo "     cp $BINARY_PATH ~/.shikki/bin/shikki-secrets-brokerd.new"
+echo "     mv ~/.shikki/bin/shikki-secrets-brokerd.new ~/.shikki/bin/shikki-secrets-brokerd"
+echo "  2. Restart the daemon:"
+echo "     launchctl unload ~/.shikki/LaunchAgents/io.shikki.secrets-brokerd.plist"
+echo "     launchctl load -w ~/.shikki/LaunchAgents/io.shikki.secrets-brokerd.plist"
+echo "  3. Unlock and check vault status:"
+echo "     shi secrets unlock --master-password <pw>"
+echo "     shi secrets brokerd status   # reports 'memory only — ...' until .app step"
 echo ""
 echo "Note: vault session key is NOT persisted (memory-only custody)."
 echo "  Re-entry of the master password is required after each daemon restart."
