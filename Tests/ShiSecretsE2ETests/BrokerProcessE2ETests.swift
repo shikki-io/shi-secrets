@@ -238,16 +238,7 @@ struct ShiSecretsBrokerProcessE2E {
         broker2.standardError  = FileHandle.nullDevice
         defer { broker2.terminate() }
         try broker2.run()
-
-        // Wait for broker2's socket (up to 10 s).
-        let deadline = Date().addingTimeInterval(15)
-        while Date() < deadline {
-            if FileManager.default.fileExists(atPath: socketPath) { break }
-            try await Task.sleep(nanoseconds: 100_000_000)
-        }
-        guard FileManager.default.fileExists(atPath: socketPath) else {
-            throw E2EError.socketTimeout(socketPath)
-        }
+        try await E2ESupport.waitForBrokerSocket(socketPath)
 
         // The fresh process holds no session key — vault must start locked.
         // SocketConnection opens a new connection per request, so no stale handle.
@@ -291,18 +282,7 @@ struct ShiSecretsBrokerProcessE2E {
         broker.standardOutput = FileHandle.nullDevice
         broker.standardError  = FileHandle.nullDevice
         try broker.run()
-
-        // Wait for socket to appear (up to 10 s).
-        let deadline = Date().addingTimeInterval(15)
-        while Date() < deadline {
-            if FileManager.default.fileExists(atPath: socketPath) { break }
-            try await Task.sleep(nanoseconds: 100_000_000)  // 100 ms
-        }
-        guard FileManager.default.fileExists(atPath: socketPath) else {
-            broker.terminate()
-            server.stop()
-            throw E2EError.socketTimeout(socketPath)
-        }
+        try await E2ESupport.waitForBrokerSocket(socketPath)
 
         let client = ProductionBrokerClient(
             socket: SocketConnection(socketPath: socketPath)

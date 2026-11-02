@@ -72,7 +72,7 @@ struct VaultReencryptE2ETests {
             broker1.terminate()
             try? FileManager.default.removeItem(atPath: socketPath1)
         }
-        try await waitForSocket(socketPath1, timeout: 25)
+        try await waitForSocket(socketPath1, timeout: 15)
 
         let client1 = ProductionBrokerClient(socket: SocketConnection(socketPath: socketPath1))
         try await client1.vaultUnlock(
@@ -105,7 +105,7 @@ struct VaultReencryptE2ETests {
             broker2.terminate()
             try? FileManager.default.removeItem(atPath: socketPath2)
         }
-        try await waitForSocket(socketPath2, timeout: 25)
+        try await waitForSocket(socketPath2, timeout: 15)
 
         // Give the broker time to attempt (and fail) the custody restore.
         try await Task.sleep(nanoseconds: 500_000_000) // 500 ms
@@ -168,7 +168,7 @@ struct VaultReencryptE2ETests {
             broker.terminate()
             try? FileManager.default.removeItem(atPath: socketPath)
         }
-        try await waitForSocket(socketPath, timeout: 25)
+        try await waitForSocket(socketPath, timeout: 15)
 
         let client = ProductionBrokerClient(socket: SocketConnection(socketPath: socketPath))
 
@@ -205,20 +205,8 @@ struct VaultReencryptE2ETests {
     }
 
     private func waitForSocket(_ path: String, timeout: TimeInterval) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if FileManager.default.fileExists(atPath: path) { return }
-            try await Task.sleep(nanoseconds: 100_000_000)
-        }
-        throw ReencryptE2EError.socketTimeout(path)
-    }
-
-    enum ReencryptE2EError: Error, CustomStringConvertible {
-        case socketTimeout(String)
-        var description: String {
-            switch self {
-            case .socketTimeout(let p): return "socket did not appear at \(p)"
-            }
-        }
+        // Delegates to the shared helper that serialises broker startups via
+        // BrokerProcessGate, preventing socket-wait timeouts under CPU contention.
+        try await E2ESupport.waitForBrokerSocket(path, timeout: timeout)
     }
 }

@@ -1,22 +1,39 @@
 #!/usr/bin/env bash
 # sign-shi-secrets-brokerd.sh — Team-sign shi-secrets-brokerd with SH7MZH647S.
 #
-# spec: 7c2e9a14 vault-lock-per-platform rev 3, W1 (AC-W1-1).
+# spec: 7c2e9a14 vault-lock-per-platform rev 3, W1.
 #
-# Required for AppleKeychainCustody (data protection Keychain):
-#   - kSecAttrAccessibleWhenUnlockedThisDeviceOnly enforcement (BR-02)
-#   - kSecUseDataProtectionKeychain support
-#   - keychain-access-groups entitlement
+# TEAM-SIGN PHASE (current):
+#   Sign with the OBYW.ONE Apple Distribution identity only — no entitlements,
+#   no provisioning profile required.  The resulting binary:
+#     - Carries a stable SH7MZH647S team identifier so standard login-keychain
+#       items (credentials + OAuth token) survive upgrades without re-prompting.
+#     - Uses AppleKeychainCustody in memory-only mode because
+#       keychain-access-groups is absent.  The vault session key is NOT
+#       persisted to disk — re-entry of the master password is required after
+#       a daemon restart.
+#
+# .APP FOLLOW-UP (next milestone):
+#   Bundle the binary in a signed .app, register
+#   io.shikki.vault-key in the Apple Developer Portal under App ID
+#   eu.fj-studios.shikki.secrets-brokerd, obtain the provisioning profile, then
+#   re-sign with:
+#     codesign --sign "$IDENTITY" \
+#              --entitlements Sources/ShiSecretsBrokerd/ShikkiSecretsBrokerd.entitlements \
+#              --timestamp --options runtime --force "$BINARY_PATH"
+#   Restore the entitlements dict (keychain-access-groups SH7MZH647S.io.shikki.vault-key)
+#   before that step — see the comment block in ShikkiSecretsBrokerd.entitlements.
 #
 # Usage:
 #   ./scripts/sign-shi-secrets-brokerd.sh [--binary <path>]
 #
 # Default binary path: .build/release/shi-secrets-brokerd
-# Override: SHI_CODESIGN_IDENTITY env var (same as codesign-admin-key-ceremony.sh)
+# Override: SHI_CODESIGN_IDENTITY env var
 #
 # Prerequisites:
 #   - Apple Distribution: OBYW.ONE (SH7MZH647S) cert in your login keychain.
 #   - codesign(1) available (Xcode command line tools).
+#   - NO provisioning profile required for this team-sign phase.
 
 set -euo pipefail
 
@@ -52,21 +69,16 @@ if [[ ! -f "$BINARY_PATH" ]]; then
     exit 1
 fi
 
-ENTITLEMENTS="$REPO_ROOT/Sources/ShiSecretsBrokerd/ShikkiSecretsBrokerd.entitlements"
-
-if [[ ! -f "$ENTITLEMENTS" ]]; then
-    echo "✘ entitlements not found at: $ENTITLEMENTS" >&2
-    exit 1
-fi
-
-echo "→ Signing: $BINARY_PATH"
+echo "→ Signing (team-sign, no entitlements): $BINARY_PATH"
 echo "  Identity: $IDENTITY"
-echo "  Entitlements: $ENTITLEMENTS"
+echo "  Entitlements: none (team-sign phase — see .app follow-up in script header)"
 
 # ── Sign ─────────────────────────────────────────────────────────────────────
+# No --entitlements flag: team-sign only.
+# The standard login-keychain items (io.shikki.vault / vault-credentials and
+# io.shikki.vault-key / access-token) are keyed by team ID and survive upgrades.
 codesign \
     --sign "$IDENTITY" \
-    --entitlements "$ENTITLEMENTS" \
     --timestamp \
     --options runtime \
     --force \
@@ -76,23 +88,26 @@ codesign \
 echo "→ Verifying signature..."
 codesign --verify --verbose=2 "$BINARY_PATH"
 
-TEAM=$(codesign -d --entitlements :- "$BINARY_PATH" 2>/dev/null \
-    | plutil -extract "keychain-access-groups" raw - 2>/dev/null \
-    || echo "(not present)")
+TEAM_ID=$(codesign -d --verbose=2 "$BINARY_PATH" 2>&1 \
+    | grep TeamIdentifier \
+    | awk -F= '{print $NF}' \
+    | tr -d ' ')
 
-echo "→ Team: $(codesign -d --verbose=2 "$BINARY_PATH" 2>&1 | grep TeamIdentifier | awk '{print $2}')"
-echo "→ keychain-access-groups: $TEAM"
+echo "→ TeamIdentifier: $TEAM_ID"
 
-if [[ "$(codesign -d --verbose=2 "$BINARY_PATH" 2>&1 | grep TeamIdentifier | awk -F= '{print $NF}')" != "SH7MZH647S" ]]; then
-    echo "✘ TeamIdentifier mismatch — expected SH7MZH647S" >&2
+if [[ "$TEAM_ID" != "SH7MZH647S" ]]; then
+    echo "✘ TeamIdentifier mismatch — expected SH7MZH647S, got $TEAM_ID" >&2
     exit 1
 fi
 
-echo "✓ shi-secrets-brokerd signed with SH7MZH647S"
+echo "✓ shi-secrets-brokerd signed with team SH7MZH647S (no entitlements)"
 echo ""
-echo "Next: test data protection Keychain availability:"
-echo "  .build/release/shi-secrets-brokerd --dry-run --socket /tmp/test.sock &"
+echo "Install and test:"
+echo "  cp $BINARY_PATH /usr/local/bin/shi-secrets-brokerd"
+echo "  shi-secrets-brokerd --dry-run --socket /tmp/test.sock &"
 echo "  shi secrets vault unlock --master-password <pw>"
-echo "  shi secrets vault status    # should show 'custody: apple-keychain'"
-echo "  # lock Mac screen, wait 2s, unlock"
-echo "  shi secrets vault status    # should show 'custody: locked'"
+echo "  shi secrets vault status   # backend: 'memory only — ...'"
+echo ""
+echo "Note: vault session key is NOT persisted (memory-only custody)."
+echo "  Re-entry of the master password is required after each daemon restart."
+echo "  See .app follow-up in the script header to enable persistent custody."

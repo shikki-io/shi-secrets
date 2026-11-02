@@ -294,12 +294,10 @@ struct VaultCustodyE2ETests {
     }
 
     private func waitForSocket(_ path: String, timeout: TimeInterval) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if FileManager.default.fileExists(atPath: path) { return }
-            try await Task.sleep(nanoseconds: 100_000_000)
-        }
-        throw CustodyE2EError.socketTimeout(path)
+        // Delegates to the shared helper that serialises broker process startups
+        // across all E2E suites via BrokerProcessGate, preventing socket-wait
+        // timeouts under CPU contention.
+        try await E2ESupport.waitForBrokerSocket(path, timeout: timeout)
     }
 
     private func waitForSocketGone(_ path: String, timeout: TimeInterval) async throws {

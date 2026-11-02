@@ -128,3 +128,62 @@ enum E2ESupport {
         return await stack.daemon.handleRequest(request, wrapped: wrapped)
     }
 }
+
+// MARK: - BrokerProcessGate
+
+/// Serialises broker-process launches across E2E suites.
+///
+/// Swift Testing runs @Suite types in parallel by default.  When four suites
+/// each spawn a brokerd process at the same time the Mac runs out of CPU
+/// budget during socket creation, causing 15 s socket-wait timeouts to expire.
+/// Acquiring the gate before `Process.run()` and releasing it once the socket
+/// file appears limits concurrent startups to one at a time while letting the
+/// test bodies (which are I/O-bound) overlap freely.
+actor BrokerProcessGate {
+    static let shared = BrokerProcessGate()
+    private var inUse = false
+    private var queue: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        guard inUse else { inUse = true; return }
+        await withCheckedContinuation { queue.append($0) }
+    }
+
+    func release() {
+        if queue.isEmpty { inUse = false; return }
+        queue.removeFirst().resume()
+    }
+}
+
+// MARK: - Shared socket-wait helper
+
+enum E2EBrokerError: Error, CustomStringConvertible {
+    case socketTimeout(String)
+    var description: String {
+        switch self {
+        case .socketTimeout(let p): return "broker socket did not appear at \(p)"
+        }
+    }
+}
+
+extension E2ESupport {
+    /// Wait for a broker process socket file to appear, serialising the
+    /// startup phase via `BrokerProcessGate.shared`.
+    ///
+    /// Call this after `Process.run()` with `timeout: 15` (default).  The gate
+    /// is held only until the socket file exists, so the test body runs without
+    /// holding the gate and other suites can start their broker concurrently.
+    static func waitForBrokerSocket(
+        _ path: String,
+        timeout: TimeInterval = 15
+    ) async throws {
+        await BrokerProcessGate.shared.acquire()
+        defer { Task { await BrokerProcessGate.shared.release() } }
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if FileManager.default.fileExists(atPath: path) { return }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        throw E2EBrokerError.socketTimeout(path)
+    }
+}
