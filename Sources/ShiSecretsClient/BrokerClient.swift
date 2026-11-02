@@ -70,18 +70,8 @@ public struct VaultStatus: Sendable, Equatable {
     }
 }
 
-/// Result from vault.reencrypt (BR-10).
-/// count: number of items re-encrypted (or that would be re-encrypted in dry-run).
-/// failures: name → reason for each item that could not be re-encrypted.
-/// Non-empty failures mean partial failure; the verb returns a wire error code in that case.
-public struct VaultReencryptResult: Sendable, Equatable, Codable {
-    public let count: Int
-    public let failures: [String: String]
-    public init(count: Int, failures: [String: String] = [:]) {
-        self.count = count
-        self.failures = failures
-    }
-}
+// VaultReencryptResult is declared in ShiSecretsKit/Auth/VaultReencryptor.swift
+// so ShiSecretsBrokerd (which imports ShiSecretsKit) can also reference it.
 
 // MARK: - Result types
 

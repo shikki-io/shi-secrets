@@ -19,6 +19,24 @@ import Foundation
 
 import Foundation
 
+// MARK: - VaultReencryptResult
+
+/// Result returned by vault.reencrypt (BR-10).
+/// Declared in ShiSecretsKit so both ShiSecretsBrokerd and ShiSecretsClient can reference it.
+public struct VaultReencryptResult: Sendable, Codable, Equatable {
+    /// Number of items re-encrypted (or that would be re-encrypted in dry-run).
+    public let count: Int
+    /// Items that could not be re-encrypted: name → reason. Empty on full success.
+    public let failures: [String: String]
+
+    public init(count: Int, failures: [String: String] = [:]) {
+        self.count = count
+        self.failures = failures
+    }
+}
+
+// MARK: - VaultReencryptError
+
 /// Errors produced by the vault.reencrypt verb (BR-10).
 public enum VaultReencryptError: Error, Sendable, Equatable, CustomStringConvertible {
     /// The BWClient's VaultwardenClient was not wired before reEncryptLegacyPlaintext was called.
