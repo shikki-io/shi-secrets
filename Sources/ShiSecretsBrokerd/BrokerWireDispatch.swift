@@ -565,7 +565,7 @@ public actor BrokerWireDispatcher {
     private func dispatchVaultReencrypt(_ request: WireRequest, peerUid: UInt32) async -> WireResponse {
         if let denied = await requireOwner(request, peerUid: peerUid) { return denied }
         do {
-            let entries = try await daemon.bwClient.list(filter: nil)
+            let entries = try await daemon.bwClient.list()
             let count = entries.count
             return WireResponse(id: request.id, result: .object([
                 "count": .int(Int64(count)),
