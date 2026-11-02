@@ -283,8 +283,10 @@ struct VaultCustodyE2ETests {
     // MARK: - Helpers
 
     private func makeTmpDir() -> String {
-        let path = NSTemporaryDirectory()
-            .appending("shi-custody-e2e-\(UUID().uuidString.prefix(8))")
+        // Use /tmp directly — NSTemporaryDirectory() expands to
+        // /var/folders/.../T/ which can produce paths near the 104-char
+        // Unix domain socket limit on macOS.
+        let path = "/tmp/shi-custody-e2e-\(UUID().uuidString.prefix(8))"
         try? FileManager.default.createDirectory(
             atPath: path, withIntermediateDirectories: true
         )
