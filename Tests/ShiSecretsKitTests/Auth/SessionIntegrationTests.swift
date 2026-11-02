@@ -31,7 +31,14 @@ struct SessionIntegrationTests {
         // 1. KeychainVaultCredentials().load() returns stored credentials.
         // 2. VaultwardenClient(credentials:).connect() exchanges token.
         // 3. SessionCache.currentToken() returns non-nil.
-        let kc = KeychainVaultCredentials()
+        //
+        // NOTE: This live integration path reads the real production Keychain item.
+        // It is guarded by SHIKKI_SECRETS_INTEGRATION=1 and intentionally uses the
+        // production service/account to verify the full bootstrap sequence.
+        let kc = KeychainVaultCredentials( // KEYCHAIN-LIVE-INTEGRATION-EXEMPT
+            service: KeychainVaultCredentials.service,
+            account: KeychainVaultCredentials.account
+        )
         let creds = try kc.load()
         let client = try VaultwardenClient(credentials: creds)
         try await client.connect()

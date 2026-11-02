@@ -62,7 +62,34 @@ public struct KeychainVaultCredentials: Sendable {
         case itemAlreadyExists
     }
 
-    public init() {}
+    // MARK: - Instance service / account
+
+    /// Service identifier used by this instance.
+    ///
+    /// Defaults to the production value `Self.service`. Tests inject a unique
+    /// per-run value so they never touch the operator's real Keychain item.
+    public let service: String
+
+    /// Account label used by this instance.
+    ///
+    /// Defaults to the production value `Self.account`. Tests inject a unique
+    /// per-run value so they never touch the operator's real Keychain item.
+    public let account: String
+
+    /// Create a Keychain credential wrapper.
+    ///
+    /// - Parameters:
+    ///   - service: The Keychain service identifier. Defaults to the production
+    ///     value `"io.shikki.vault"`. **Tests must always supply a unique test value.**
+    ///   - account: The Keychain account label. Defaults to the production value
+    ///     `"vault-credentials"`. **Tests must always supply a unique test value.**
+    public init(
+        service: String = Self.service,
+        account: String = Self.account
+    ) {
+        self.service = service
+        self.account = account
+    }
 
     // MARK: - store(_:overwrite:)
 
@@ -122,8 +149,8 @@ public struct KeychainVaultCredentials: Sendable {
     ) -> [CFString: Any] {
         var q: [CFString: Any] = [
             kSecClass:           kSecClassGenericPassword,
-            kSecAttrService:     Self.service,
-            kSecAttrAccount:     Self.account,
+            kSecAttrService:     service,
+            kSecAttrAccount:     account,
             kSecValueData:       data,
             kSecAttrAccessible:  kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
@@ -142,8 +169,8 @@ public struct KeychainVaultCredentials: Sendable {
             // not modifiable via SecItemUpdate on macOS 14+).
             let deleteQuery: [CFString: Any] = [
                 kSecClass:       kSecClassGenericPassword,
-                kSecAttrService: Self.service,
-                kSecAttrAccount: Self.account,
+                kSecAttrService: service,
+                kSecAttrAccount: account,
             ]
             SecItemDelete(deleteQuery as CFDictionary)
             status = SecItemAdd(query, nil)
@@ -166,8 +193,8 @@ public struct KeychainVaultCredentials: Sendable {
     public func load() throws -> VaultwardenCredentials {
         let query: [CFString: Any] = [
             kSecClass:            kSecClassGenericPassword,
-            kSecAttrService:      Self.service,
-            kSecAttrAccount:      Self.account,
+            kSecAttrService:      service,
+            kSecAttrAccount:      account,
             kSecReturnData:       true,
             kSecMatchLimit:       kSecMatchLimitOne,
         ]
@@ -200,8 +227,8 @@ public struct KeychainVaultCredentials: Sendable {
     public func delete() {
         let query: [CFString: Any] = [
             kSecClass:       kSecClassGenericPassword,
-            kSecAttrService: Self.service,
-            kSecAttrAccount: Self.account,
+            kSecAttrService: service,
+            kSecAttrAccount: account,
         ]
         SecItemDelete(query as CFDictionary)
     }
@@ -227,7 +254,7 @@ public struct KeychainVaultCredentials: Sendable {
         let legacyQuery: [CFString: Any] = [
             kSecClass:        kSecClassGenericPassword,
             kSecAttrService:  Self.legacyService,
-            kSecAttrAccount:  Self.account,
+            kSecAttrAccount:  account,
             kSecReturnData:   true,
             kSecMatchLimit:   kSecMatchLimitOne,
         ]
@@ -251,7 +278,7 @@ public struct KeychainVaultCredentials: Sendable {
             let deleteQuery: [CFString: Any] = [
                 kSecClass:       kSecClassGenericPassword,
                 kSecAttrService: Self.legacyService,
-                kSecAttrAccount: Self.account,
+                kSecAttrAccount: account,
             ]
             SecItemDelete(deleteQuery as CFDictionary)
             throw KeychainError.dataMalformed
@@ -264,13 +291,13 @@ public struct KeychainVaultCredentials: Sendable {
             let deleteQuery: [CFString: Any] = [
                 kSecClass:       kSecClassGenericPassword,
                 kSecAttrService: Self.legacyService,
-                kSecAttrAccount: Self.account,
+                kSecAttrAccount: account,
             ]
             SecItemDelete(deleteQuery as CFDictionary)
             throw KeychainError.dataMalformed
         }
 
-        // 3. Write under the canonical service name.
+        // 3. Write under the canonical service name (self.service).
         // Use overwrite: true in case the canonical entry already exists
         // (handles edge case where both legacy and canonical are present).
         try store(credentials, overwrite: true)
@@ -279,7 +306,7 @@ public struct KeychainVaultCredentials: Sendable {
         let deleteLegacyQuery: [CFString: Any] = [
             kSecClass:       kSecClassGenericPassword,
             kSecAttrService: Self.legacyService,
-            kSecAttrAccount: Self.account,
+            kSecAttrAccount: account,
         ]
         SecItemDelete(deleteLegacyQuery as CFDictionary)
         // Ignore delete status — if it's already gone, migration is still complete.
