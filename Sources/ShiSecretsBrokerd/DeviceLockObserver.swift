@@ -210,9 +210,11 @@ public actor DeviceLockObserver {
 
     // MARK: - Event handlers
 
-    /// Screen locked — drop the vault key from memory + custody (BR-03).
+    /// Screen locked — drop the vault key from memory ONLY (BR-03).
+    /// The custody store is preserved so device-unlock can restore the key
+    /// without a master-password prompt (BR-04).
     private func handleLock() async {
-        try? await bwClient.lock()
+        try? await bwClient.lockMemoryOnly()
     }
 
     /// Screen unlocked — try to restore the key from custody (BR-04).

@@ -488,12 +488,22 @@ public actor VaultwardenClient {
     }
 
     /// Drop the vault key from memory AND from the custody store (BR-06).
+    /// Called by `vault.lock` wire verb and `shi secrets lock`.
     /// The access token survives; the data does not open.
     public func lockVault() async {
         await vaultKey.lock()
         if let c = custody {
             try? await c.clear()
         }
+    }
+
+    /// Drop the vault key from memory ONLY — custody store is preserved (BR-03).
+    /// Called by the device-lock path so that unlock can restore the key
+    /// from the custody file without a master-password prompt (BR-04).
+    /// The access token survives; the data does not open.
+    public func lockVaultMemoryOnly() async {
+        await vaultKey.lock()
+        // custody store intentionally NOT cleared — BR-04 restore requires it.
     }
 
     // MARK: - fetchSecret(id:)

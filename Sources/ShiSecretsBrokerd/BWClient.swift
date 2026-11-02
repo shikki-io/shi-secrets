@@ -102,6 +102,11 @@ public protocol BWClient: BWClientWriteBack, Sendable {
     /// After this call, isVaultUnlocked is false and the operator must
     /// re-type the master password to re-unlock.
     func lock() async throws
+
+    /// Drop the vault key from memory ONLY — custody store preserved (BR-03).
+    /// Used by the device-lock path so unlock can restore the key from
+    /// custody without a master-password prompt (BR-04).
+    func lockMemoryOnly() async throws
 }
 
 // MARK: - InMemoryBWClient (fake / default DEBUG + test binding)
@@ -207,6 +212,11 @@ public actor InMemoryBWClient: BWClient {
 
     /// BR-06: drop the vault key. In-memory only (no custody in test double).
     public func lock() async throws {
+        _vaultUnlocked = false
+    }
+
+    /// BR-03: device-lock path — same as lock() for in-memory (no custody to preserve).
+    public func lockMemoryOnly() async throws {
         _vaultUnlocked = false
     }
 }
@@ -340,6 +350,13 @@ public actor ProductionBWClient: BWClient {
     public func lock() async throws {
         guard let vc = vaultClient else { return }
         await vc.lockVault()
+    }
+
+    /// BR-03: device-lock path — drop the vault key from memory ONLY.
+    /// Custody file is preserved so device-unlock can restore without a password (BR-04).
+    public func lockMemoryOnly() async throws {
+        guard let vc = vaultClient else { return }
+        await vc.lockVaultMemoryOnly()
     }
 
     // MARK: - Custody wiring (spec 7c2e9a14 W0)
