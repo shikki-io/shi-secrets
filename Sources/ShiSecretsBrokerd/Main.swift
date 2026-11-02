@@ -174,6 +174,15 @@ struct BrokerMain {
             }
             let prod = ProductionBWClient()
             await prod.wire(client: prodVault)
+            // spec 7c2e9a14 W1/W4: wire AppleKeychainCustody (BR-02) and attempt
+            // a silent key restore so a process restart after a clean unlock
+            // does not require a master-password re-entry (BR-04).
+            // AppleKeychainCustody.checkAvailability() throws dataProtectionUnavailable
+            // if the binary lacks keychain-access-groups — wireCustody is no-op in that
+            // case (key stays memory-only, not a fatal error at startup).
+            let keychainCustody = AppleKeychainCustody()
+            await prod.wireCustody(keychainCustody)
+            await prod.restorePersistedKey()
             bwClient = prod
             prodVaultClient = prodVault
             // Resolution order (production):

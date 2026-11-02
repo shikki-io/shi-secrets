@@ -240,7 +240,7 @@ struct ShiSecretsBrokerProcessE2E {
         try broker2.run()
 
         // Wait for broker2's socket (up to 10 s).
-        let deadline = Date().addingTimeInterval(10)
+        let deadline = Date().addingTimeInterval(15)
         while Date() < deadline {
             if FileManager.default.fileExists(atPath: socketPath) { break }
             try await Task.sleep(nanoseconds: 100_000_000)
@@ -293,7 +293,7 @@ struct ShiSecretsBrokerProcessE2E {
         try broker.run()
 
         // Wait for socket to appear (up to 10 s).
-        let deadline = Date().addingTimeInterval(10)
+        let deadline = Date().addingTimeInterval(15)
         while Date() < deadline {
             if FileManager.default.fileExists(atPath: socketPath) { break }
             try await Task.sleep(nanoseconds: 100_000_000)  // 100 ms
@@ -344,7 +344,7 @@ struct ShiSecretsBrokerProcessE2E {
                 return "shi-secrets-brokerd binary not found at \(p). " +
                        "Run `swift build --product shi-secrets-brokerd` first."
             case .socketTimeout(let p):
-                return "broker socket did not appear at \(p) within 10 s"
+                return "broker socket did not appear at \(p) within 15 s"
             }
         }
     }

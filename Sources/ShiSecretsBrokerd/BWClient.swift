@@ -115,6 +115,16 @@ public protocol BWClient: BWClientWriteBack, Sendable {
 
     /// Description of the active custody backend (nil when locked). BR-07.
     var custodyBackend: String? { get async }
+
+    // MARK: - Re-encryption (spec 7c2e9a14 W4, BR-10)
+
+    /// Scan the vault for legacy plaintext ciphers, re-encrypt each one with
+    /// the current vault session key, and return a summary (BR-10).
+    ///
+    /// `dryRun=true` (the default) reports what would be done without writing.
+    /// `dryRun=false` writes each plaintext cipher back as an EncString.
+    /// Throws VaultReencryptError.partialFailure if any single item fails.
+    func reEncryptLegacyPlaintext(dryRun: Bool) async throws -> VaultReencryptResult
 }
 
 // MARK: - InMemoryBWClient (fake / default DEBUG + test binding)
@@ -230,6 +240,11 @@ public actor InMemoryBWClient: BWClient {
 
     /// lockReason: always nil for in-memory (no custody tracking).
     public var lockReason: String? { nil }
+
+    /// reEncryptLegacyPlaintext: no-op for in-memory vault (no Vaultwarden ciphers to scan).
+    public func reEncryptLegacyPlaintext(dryRun: Bool) async throws -> VaultReencryptResult {
+        return VaultReencryptResult(count: 0, failures: [:])
+    }
 
     /// custodyBackend: always nil for in-memory (no custody).
     public var custodyBackend: String? { nil }
@@ -413,5 +428,14 @@ public actor ProductionBWClient: BWClient {
             guard let vc = vaultClient else { return nil }
             return await vc.custodyBackend
         }
+    }
+
+    /// reEncryptLegacyPlaintext: delegates to VaultwardenClient.reEncryptLegacyPlaintext (BR-10).
+    public func reEncryptLegacyPlaintext(dryRun: Bool) async throws -> VaultReencryptResult {
+        guard let vc = vaultClient else {
+            throw VaultReencryptError.notWired
+        }
+        let report = try await vc.reEncryptLegacyPlaintext(dryRun: dryRun)
+        return VaultReencryptResult(count: report.rewritten, failures: report.failures)
     }
 }

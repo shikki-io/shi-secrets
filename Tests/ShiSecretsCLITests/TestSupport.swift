@@ -139,7 +139,7 @@ actor RecordingBrokerClient: BrokerClient {
     nonisolated func vaultLock() async throws {}
     nonisolated func simulateDeviceLock() async throws {}
     nonisolated func simulateDeviceUnlock() async throws {}
-    nonisolated func vaultReencrypt() async throws -> VaultReencryptResult { VaultReencryptResult(count: 0) }
+    nonisolated func vaultReencrypt() async throws -> VaultReencryptResult { VaultReencryptResult(count: 0, failures: [:]) }
 }
 
 // Fixed-clock helper for footer snapshots.

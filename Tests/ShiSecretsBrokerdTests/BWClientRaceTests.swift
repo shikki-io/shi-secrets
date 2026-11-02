@@ -96,6 +96,11 @@ struct BWClientRaceTests {
         var isVaultUnlocked: Bool { false }
         func lock() async throws {}
         func lockMemoryOnly() async throws {}
+        var lockReason: String? { nil }
+        var custodyBackend: String? { nil }
+        func reEncryptLegacyPlaintext(dryRun: Bool) async throws -> VaultReencryptResult {
+            VaultReencryptResult(count: 0, failures: [:])
+        }
     }
 
     @Test("bw invalidate between prepare and persist → .deny(.brokerSessionInvalid) + compensateRevoke seam (T2)")

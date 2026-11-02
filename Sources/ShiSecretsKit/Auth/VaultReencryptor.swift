@@ -16,3 +16,22 @@ import Foundation
 //
 // VaultReencryptResult is declared in ShiSecretsClient/BrokerClient.swift
 // as a public type shared by the client and daemon layers.
+
+import Foundation
+
+/// Errors produced by the vault.reencrypt verb (BR-10).
+public enum VaultReencryptError: Error, Sendable, Equatable, CustomStringConvertible {
+    /// The BWClient's VaultwardenClient was not wired before reEncryptLegacyPlaintext was called.
+    case notWired
+    /// One or more items could not be re-encrypted; failures maps name → reason.
+    case partialFailure([String: String])
+
+    public var description: String {
+        switch self {
+        case .notWired:
+            return "vault.reencrypt: VaultwardenClient not wired — call wire(client:) before reEncryptLegacyPlaintext"
+        case .partialFailure(let f):
+            return "vault.reencrypt: \(f.count) item(s) failed — \(f.keys.joined(separator: ", "))"
+        }
+    }
+}

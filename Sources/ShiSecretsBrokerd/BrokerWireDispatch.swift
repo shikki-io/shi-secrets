@@ -558,22 +558,31 @@ public actor BrokerWireDispatcher {
         return WireResponse(id: request.id, result: .object(result))
     }
 
-    /// Scan the vault for plaintext entries and return a count (BR-10).
-    /// The `--dry-run` and production paths both call bwClient.list().
-    /// Actual re-encryption (writing new encrypted values) is out of scope
-    /// per spec 7c2e9a14 §Out-of-scope.
+    /// Re-encrypt legacy plaintext vault ciphers in place and return a count (BR-10).
+    /// Reads each cipher via GET /api/ciphers, detects plaintext by the absence
+    /// of the EncString "2." prefix, encrypts with the current vault session key,
+    /// and writes back via PUT /api/ciphers/{id}.
+    /// Non-zero exit (WireErrorCode.internalError) when any item fails.
     private func dispatchVaultReencrypt(_ request: WireRequest, peerUid: UInt32) async -> WireResponse {
         if let denied = await requireOwner(request, peerUid: peerUid) { return denied }
         do {
-            let entries = try await daemon.bwClient.list()
-            let count = entries.count
+            let result = try await daemon.bwClient.reEncryptLegacyPlaintext(dryRun: false)
+            if !result.failures.isEmpty {
+                // BR-10: non-zero exit on any failure — surface as internalError so
+                // the CLI can exit non-zero and name the affected items.
+                let names = result.failures.keys.sorted().joined(separator: ", ")
+                return WireResponse(id: request.id, error: WireError(
+                    code: WireErrorCode.internalError,
+                    message: "vault.reencrypt partial failure (\(result.failures.count) item(s)): \(names)"
+                ))
+            }
             return WireResponse(id: request.id, result: .object([
-                "count": .int(Int64(count)),
+                "count": .int(Int64(result.count)),
             ]))
         } catch {
             return WireResponse(id: request.id, error: WireError(
                 code: WireErrorCode.internalError,
-                message: "vault.reencrypt list failed: \(error)"
+                message: "vault.reencrypt failed: \(error)"
             ))
         }
     }

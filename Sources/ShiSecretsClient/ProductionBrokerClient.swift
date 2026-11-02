@@ -165,14 +165,21 @@ public actor ProductionBrokerClient: BrokerClient {
         _ = try await call(method: "vault.simulate.device_unlock", params: .object([:]))
     }
 
-    /// List plaintext vault entries and return their count (vault.reencrypt, BR-10).
+    /// Re-encrypt legacy plaintext vault entries in place (vault.reencrypt, BR-10).
     public func vaultReencrypt() async throws -> VaultReencryptResult {
         let result = try await call(method: "vault.reencrypt", params: .object([:]))
         guard case let .object(obj) = result,
               case let .int(count) = obj["count"] else {
             throw BrokerClientError.wireDecodeFailed("vault.reencrypt expected {count: Int}")
         }
-        return VaultReencryptResult(count: Int(count))
+        // failures is optional — omitted when empty.
+        var failures: [String: String] = [:]
+        if case let .object(failObj) = obj["failures"] {
+            for (k, v) in failObj {
+                if case let .string(reason) = v { failures[k] = reason }
+            }
+        }
+        return VaultReencryptResult(count: Int(count), failures: failures)
     }
 
     // MARK: - Internals

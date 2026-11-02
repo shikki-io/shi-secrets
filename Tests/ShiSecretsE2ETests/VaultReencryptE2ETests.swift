@@ -121,10 +121,10 @@ struct VaultReencryptE2ETests {
         )
     }
 
-    // MARK: - T-07: vault.reencrypt returns the count of vault entries (BR-10)
+    // MARK: - T-07: vault.reencrypt re-encrypts plaintext entries and asserts ciphertext (BR-10)
 
-    @Test("T-07: vault.reencrypt returns entry count for plaintext vault entries")
-    func test_T07_reencryptReturnsEntryCount() async throws {
+    @Test("T-07: vault.reencrypt re-encrypts plaintext entries and server stores ciphertext")
+    func test_T07_reencryptWritesCiphertextOnServer() async throws {
         let tmpDir = makeTmpDir(tag: "t07")
         defer { try? FileManager.default.removeItem(atPath: tmpDir) }
         let custodyFile = (tmpDir as NSString).appendingPathComponent("vault.key")
@@ -138,6 +138,13 @@ struct VaultReencryptE2ETests {
         )
         try await server.start()
         defer { server.stop() }
+
+        // Seed 3 plaintext entries directly on the server (bypassing client encryption).
+        // These simulate legacy ciphers written before the encryption fix (#47).
+        let plainCount = 3
+        for i in 1...plainCount {
+            _ = server.seedPlaintextCipher(name: "legacy-secret-\(i)", notes: "plainvalue-\(i)")
+        }
 
         let binaryPath = try VaultCustodyE2ETests.resolveBinary()
         let env: [String: String] = [
@@ -165,24 +172,26 @@ struct VaultReencryptE2ETests {
 
         let client = ProductionBrokerClient(socket: SocketConnection(socketPath: socketPath))
 
-        // Unlock vault first (secret.set requires unlocked vault).
+        // Unlock vault first — required to derive the session key used for encryption.
         try await client.vaultUnlock(
             masterPassword: Self.fixturePassword,
             email: Self.fixtureEmail
         )
 
-        // Seed 3 entries.
-        let entryCount = 3
-        for i in 1...entryCount {
-            try await client.set(name: "reencrypt-test-\(i)", value: "value-\(i)")
-        }
-
-        // BR-10: vault.reencrypt returns count of listed entries.
+        // BR-10: vault.reencrypt re-encrypts the legacy plaintext ciphers.
         let result = try await client.vaultReencrypt()
         #expect(
-            result.count == entryCount,
-            "BR-10: vault.reencrypt must return count = \(entryCount), got \(result.count)"
+            result.count == plainCount,
+            "BR-10: vault.reencrypt must re-encrypt \(plainCount) plaintext items, got count=\(result.count)"
         )
+        #expect(
+            result.failures.isEmpty,
+            "BR-10: vault.reencrypt must succeed for all items, failures=\(result.failures)"
+        )
+
+        // Assert server now holds EncStrings (name and notes both start with "2.").
+        // FakeVaultwardenServer.assertCiphersAreEncrypted() throws if any field is plaintext.
+        try server.assertCiphersAreEncrypted()
     }
 
     // MARK: - Helpers
