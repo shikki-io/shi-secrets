@@ -260,7 +260,14 @@ struct BrokerMain {
         // path for IO failures + sidecar/Keychain mismatch).
         let systemScopePolicy: ScopePolicy?
         do {
-            systemScopePolicy = try bootstrap.loadSystemScopePolicy()
+            if devArgs.isIsolatedFromRealKeychain {
+                // dev/dry-run: no per-system policy; reading the real Keychain
+                // here blocked the boot before the socket bound.
+                log("shikki-secrets-brokerd: isolated mode — per-system ScopePolicy skipped (real Keychain not consulted)")
+                systemScopePolicy = nil
+            } else {
+                systemScopePolicy = try bootstrap.loadSystemScopePolicy()
+            }
             if let policy = systemScopePolicy {
                 log("shikki-secrets-brokerd: per-system ScopePolicy active for systemName=\(policy.systemName)")
             }

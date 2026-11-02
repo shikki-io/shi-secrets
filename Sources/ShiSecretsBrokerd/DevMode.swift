@@ -161,6 +161,11 @@ public struct DevModeArgs: Sendable, Equatable {
     public var dryRun: Bool
     public var socketPath: String?
 
+    /// True for --dev-mode / --dry-run: the daemon runs on seeded in-memory
+    /// state and must never read the operator's real login Keychain (a
+    /// legacy-keychain read blocks on an ACL prompt and the socket never binds).
+    public var isIsolatedFromRealKeychain: Bool { enabled || dryRun }
+
     public static func parse(_ args: [String]) -> DevModeArgs {
         var enabled = false
         var dryRun  = false
