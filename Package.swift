@@ -163,5 +163,18 @@ let package = Package(
                 .product(name: "Vapor", package: "vapor"),
             ]
         ),
+        // Process-level E2E: ProductionBrokerClient → Unix socket → BrokerWireDispatcher.
+        // Exercises set/delete/list/get through the full client+socket+dispatcher stack
+        // without a real Vaultwarden or Keychain. Added 2026-11-02 to gate the
+        // secret.delete wire path end-to-end.
+        .testTarget(
+            name: "ShiSecretsBrokerProcessE2E",
+            dependencies: [
+                "ShiSecretsBrokerd",
+                "ShiSecretsClient",
+                "ShiSecretsKit",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ]
+        ),
     ]
 )
