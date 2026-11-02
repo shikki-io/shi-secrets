@@ -95,6 +95,13 @@ public protocol BWClient: BWClientWriteBack, Sendable {
     /// True once unlock(masterPassword:email:) has succeeded and the
     /// derived key is held in memory.
     var isVaultUnlocked: Bool { get async }
+
+    // MARK: - Vault lock (spec 7c2e9a14 W0, BR-06)
+
+    /// Drop the vault key from memory AND from the custody store (BR-06).
+    /// After this call, isVaultUnlocked is false and the operator must
+    /// re-type the master password to re-unlock.
+    func lock() async throws
 }
 
 // MARK: - InMemoryBWClient (fake / default DEBUG + test binding)
@@ -197,6 +204,11 @@ public actor InMemoryBWClient: BWClient {
 
     /// Whether the in-memory vault is unlocked.
     public var isVaultUnlocked: Bool { _vaultUnlocked }
+
+    /// BR-06: drop the vault key. In-memory only (no custody in test double).
+    public func lock() async throws {
+        _vaultUnlocked = false
+    }
 }
 
 // MARK: - ProductionBWClient (W3 — full read+write VaultwardenClient-backed)
@@ -303,7 +315,7 @@ public actor ProductionBWClient: BWClient {
     /// Monotonically bumped by `invalidateSession` (review finding U5).
     public var sessionEpoch: UInt64 { _sessionEpoch }
 
-    // MARK: - Vault unlock (feat/vault-unlock-2026-11-01)
+    // MARK: - Vault unlock / lock (feat/vault-unlock + spec 7c2e9a14 W0)
 
     /// Derive the vault session key. Delegates to VaultwardenClient.unlock.
     /// Requires that wire(client:) has already been called (i.e. the broker
@@ -322,5 +334,27 @@ public actor ProductionBWClient: BWClient {
             guard let vc = vaultClient else { return false }
             return await vc.isVaultUnlocked
         }
+    }
+
+    /// BR-06: drop the vault key from memory AND from the custody store.
+    public func lock() async throws {
+        guard let vc = vaultClient else { return }
+        await vc.lockVault()
+    }
+
+    // MARK: - Custody wiring (spec 7c2e9a14 W0)
+
+    /// Inject a custody backend into the underlying VaultwardenClient.
+    /// Must be called before the first unlock() for persistence to take effect.
+    public func wireCustody(_ custody: any VaultKeyCustody) async {
+        guard let vc = vaultClient else { return }
+        await vc.wireCustody(custody)
+    }
+
+    /// Try to restore the vault key from the custody backend without the
+    /// master password (BR-04). No-op if no key is stored. Non-fatal on error.
+    public func restorePersistedKey() async {
+        guard let vc = vaultClient else { return }
+        try? await vc.restoreFromCustody()
     }
 }

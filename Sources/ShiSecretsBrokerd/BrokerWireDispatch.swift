@@ -60,6 +60,10 @@ public actor BrokerWireDispatcher {
         case "vault.status":
             return await dispatchVaultStatus(request, peerUid: peerUid)
 
+        // spec 7c2e9a14 W0 — vault.lock drops key from memory + custody (BR-06).
+        case "vault.lock":
+            return await dispatchVaultLock(request, peerUid: peerUid)
+
         // Phase 0.5+: token.{revoke, revokeAllBots, revokeAllBotsSigned}.
         // Phase 0.6+: audit.{blastRadius, recent, seams}.
         default:
@@ -468,6 +472,25 @@ public actor BrokerWireDispatcher {
             return WireResponse(id: request.id, error: WireError(
                 code: WireErrorCode.denied,
                 message: "vault.unlock failed: \(error)"
+            ))
+        }
+    }
+
+    // MARK: - vault.lock (spec 7c2e9a14 W0, BR-06)
+
+    /// Drop the vault key from memory and custody. Only the owner may lock.
+    ///
+    /// Wire params: none.
+    /// Wire result on success: `{ "ok": true }`
+    private func dispatchVaultLock(_ request: WireRequest, peerUid: UInt32) async -> WireResponse {
+        if let denied = await requireOwner(request, peerUid: peerUid) { return denied }
+        do {
+            try await daemon.bwClient.lock()
+            return WireResponse(id: request.id, result: .object(["ok": .bool(true)]))
+        } catch {
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.internalError,
+                message: "vault.lock failed: \(error)"
             ))
         }
     }

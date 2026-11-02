@@ -145,6 +145,11 @@ public actor ProductionBrokerClient: BrokerClient {
         return VaultStatus(locked: locked)
     }
 
+    /// Drop the vault key from memory and custody store (vault.lock).
+    public func vaultLock() async throws {
+        _ = try await call(method: "vault.lock", params: .object([:]))
+    }
+
     // MARK: - Internals
 
     private func call(method: String, params: JSONValue) async throws -> JSONValue {
