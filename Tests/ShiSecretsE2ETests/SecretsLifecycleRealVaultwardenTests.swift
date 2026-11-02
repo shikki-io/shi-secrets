@@ -25,7 +25,7 @@ import Glibc
 //
 // TP-LC-R01  full lifecycle: set → get → list → delete → list (absent)
 // TP-LC-R02  set is idempotent (upsert: second set replaces, not duplicates)
-// TP-LC-R03  delete non-existent is no-op (no error)
+// TP-LC-R03  delete non-existent is refused with notFound
 // TP-LC-R04  list is empty after all keys deleted
 
 // MARK: - Mock Vaultwarden URLProtocol
@@ -299,17 +299,18 @@ struct SecretsLifecycleRealVaultwardenTests {
         try await bw.delete(name: key)
     }
 
-    // TP-LC-R03 — delete non-existent is no-op
-    @Test("TP-LC-R03: delete non-existent key — no error")
-    func test_lcr03_deleteNonexistent_noOp() async throws {
+    // TP-LC-R03 — delete non-existent is refused: a typo must not read as deleted
+    @Test("TP-LC-R03: delete non-existent key — refused with notFound")
+    func test_lcr03_deleteNonexistent_refused() async throws {
         MockVaultwardenProtocol.reset()
         let vc = try await mockVaultwardenClient()
         try await vc.connect()
         let bw = ProductionBWClient()
         await bw.wire(client: vc)
 
-        // Should not throw
-        try await bw.delete(name: "key-that-does-not-exist-r03")
+        await #expect(throws: BWClientError.notFound(name: "key-that-does-not-exist-r03")) {
+            try await bw.delete(name: "key-that-does-not-exist-r03")
+        }
     }
 
     // TP-LC-R04 — list empty after all keys deleted

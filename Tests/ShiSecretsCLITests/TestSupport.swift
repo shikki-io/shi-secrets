@@ -64,6 +64,15 @@ actor RecordingBrokerClient: BrokerClient {
         plaintexts[name] = value
     }
 
+    var deleteCalls: [String] = []
+    nonisolated func delete(name: String) async throws {
+        await logDelete(name)
+    }
+    private func logDelete(_ name: String) {
+        deleteCalls.append(name)
+        plaintexts.removeValue(forKey: name)
+    }
+
     nonisolated func rotate(name: String) async throws -> RotationResult {
         return await internalRotate(name: name)
     }

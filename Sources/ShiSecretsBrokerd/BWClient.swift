@@ -47,6 +47,8 @@ import ShiSecretsKit
 public enum BWClientError: Swift.Error, Sendable, Equatable {
     case sessionInvalidated
     case notStarted
+    /// `secret.delete` named an entry the vault doesn't hold.
+    case notFound(name: String)
     /// Kept for any stale call-sites referencing the old W1/W2 stub path.
     /// No longer thrown by ProductionBWClient as of W3.
     case notImplementedV1_1(call: String)
@@ -267,7 +269,7 @@ public actor ProductionBWClient: BWClient {
         let list = try await vc.listSecrets()
         guard let entry = list.first(where: { $0["name"] == name }),
               let id = entry["id"] else {
-            return  // not found — no-op
+            throw BWClientError.notFound(name: name)
         }
         try await vc.deleteCipher(id: id)
     }

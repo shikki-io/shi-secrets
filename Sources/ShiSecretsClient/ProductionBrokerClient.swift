@@ -11,16 +11,17 @@ import ShiSecretsKit
 // JSON-RPC method namespace mapping (operator-stable; daemon side must
 // register these in its handler dispatch table):
 //
-//   secret.get                    → BrokerClient.get(name:)
-//   secret.list                   → BrokerClient.list(filter:)
-//   secret.set                    → BrokerClient.set(name:value:)
-//   secret.rotate                 → BrokerClient.rotate(name:)
-//   token.revoke                  → BrokerClient.revoke(jti:)
-//   token.revokeAllBots           → BrokerClient.revokeAllBots(dryRun:force:)
-//   token.revokeAllBotsSigned     → BrokerClient.revokeAllBotsSigned(_:)
-//   audit.blastRadius             → BrokerClient.blastRadius(jti:)
-//   audit.recent                  → BrokerClient.recentAudit(hours:)
-//   audit.seams                   → BrokerClient.seamsRows()
+//   secret.get                    → BrokerClient.get(name:)           ✓ dispatched W3
+//   secret.list                   → BrokerClient.list(filter:)        ✓ dispatched W3
+//   secret.set                    → BrokerClient.set(name:value:)     ✓ dispatched W3
+//   secret.delete                 → BrokerClient.delete(name:)        ✓ dispatched W3 (added 2026-11-02)
+//   secret.rotate                 → BrokerClient.rotate(name:)        ✗ Phase 0.5 — not dispatched; throws .methodNotImplemented
+//   token.revoke                  → BrokerClient.revoke(jti:)         ✗ Phase 0.5 — not dispatched
+//   token.revokeAllBots           → BrokerClient.revokeAllBots(dryRun:force:)        ✗ Phase 0.5
+//   token.revokeAllBotsSigned     → BrokerClient.revokeAllBotsSigned(_:)             ✗ Phase 0.5
+//   audit.blastRadius             → BrokerClient.blastRadius(jti:)    ✗ Phase 0.6
+//   audit.recent                  → BrokerClient.recentAudit(hours:)  ✗ Phase 0.6
+//   audit.seams                   → BrokerClient.seamsRows()          ✗ Phase 0.6
 //
 // Each request id is a freshly-minted UUID string (caller can mismatch
 // match-anti-pattern is irrelevant at single-frame transport).
@@ -63,10 +64,19 @@ public actor ProductionBrokerClient: BrokerClient {
         _ = try await call(method: "secret.set", params: params)
     }
 
-    public func rotate(name: String) async throws -> RotationResult {
+    public func delete(name: String) async throws {
         let params: JSONValue = .object(["name": .string(name)])
-        let result = try await call(method: "secret.rotate", params: params)
-        return try decodeResult(result, as: RotationResult.self)
+        _ = try await call(method: "secret.delete", params: params)
+    }
+
+    /// Phase 0.5 placeholder. `secret.rotate` is not yet handled by the
+    /// broker dispatcher — calling this method throws `.methodNotImplemented`
+    /// rather than forwarding the unhandled wire frame (which would return
+    /// -32601 Method not found from the dispatcher's default arm).
+    public func rotate(name: String) async throws -> RotationResult {
+        throw BrokerClientError.methodNotImplemented(
+            "secret.rotate is not yet dispatched by the broker (Phase 0.5)"
+        )
     }
 
     // MARK: - token.*

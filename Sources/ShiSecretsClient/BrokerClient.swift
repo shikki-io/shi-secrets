@@ -19,6 +19,12 @@ public protocol BrokerClient: Sendable {
     func get(name: String) async throws -> String
     func list(filter: String?) async throws -> [VaultEntryRef]
     func set(name: String, value: String) async throws
+    /// Remove a vault entry by name. Idempotent (no error if name does not exist).
+    /// Wire method: `secret.delete` (dispatched by `BrokerWireDispatcher` since W3).
+    func delete(name: String) async throws
+    /// Rotate the value of a vault entry in-place.
+    /// Wire method: `secret.rotate` — Phase 0.5, not yet dispatched by the broker.
+    /// `ProductionBrokerClient.rotate` throws `.methodNotImplemented` until Phase 0.5 ships.
     func rotate(name: String) async throws -> RotationResult
     func revoke(jti: String) async throws
     func revokeAllBots(dryRun: Bool, force: Bool) async throws -> RevokeAllBotsResult
