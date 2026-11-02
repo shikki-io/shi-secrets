@@ -7,7 +7,7 @@ import Testing
 struct DriverGitHubTests {
 
     @Test("rotatePat creates a new PAT then revokes the old one")
-    func test_driver_github_rotatePat_createsNewPat_revokesOld() async {
+    func test_driver_github_rotatePat_createsNewPat_revokesOld() async throws {
         let http = RecordingTransport()
         let payload = try! JSONSerialization.data(withJSONObject: ["token": "ghp_newtoken42"])
         await http.queue(
@@ -15,6 +15,7 @@ struct DriverGitHubTests {
             response: DriverHTTPResponse(status: 201, body: payload)
         )
         let bw = RecordingBWClient()
+        await bw.seedGet(name: "GITHUB_ADMIN_TOKEN", fields: ["value": "ghp_fake-admin-token"])
         let driver = DriverGitHub(transport: http, bwClient: bw)
         let entry = makeEntry(vendor: "github", name: "GITHUB_PAT")
 
@@ -23,9 +24,13 @@ struct DriverGitHubTests {
         #expect(outcome == .rotated)
         let writes = await bw.writes()
         #expect(writes.first?.fields["token"] == "ghp_newtoken42")
-        // invalidate(previous:) may be called by the rotation orchestrator;
-        // exercise it directly to prove the DELETE is issued.
-        try? await driver.invalidate(previous: entry)
+        // invalidate(previous:) is called by BrokerWireDispatch after applyRotation.
+        // Exercise it directly to verify the DELETE is issued with the admin auth header.
+        await http.queue(
+            match: .init(method: "DELETE", urlContains: "/user/tokens/"),
+            response: DriverHTTPResponse(status: 204)
+        )
+        try await driver.invalidate(previous: entry)
         let requests = await http.requests()
         #expect(requests.contains(where: { $0.method == "DELETE" }))
     }
@@ -41,6 +46,7 @@ struct DriverGitHubTests {
             )
         )
         let bw = RecordingBWClient()
+        await bw.seedGet(name: "GITHUB_ADMIN_TOKEN", fields: ["value": "ghp_fake-admin-token"])
         let driver = DriverGitHub(transport: http, bwClient: bw)
         let entry = makeEntry(vendor: "github", name: "GITHUB_PAT")
 
