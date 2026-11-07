@@ -25,7 +25,7 @@ let package = Package(
         .executable(name: "shi-admin-key-ceremony", targets: ["AdminKeyCeremony"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "4.5.2"),
         .package(url: "https://github.com/FJ-Studios/shikki-plugin-api.git", from: "0.1.4"),
         // TEST-ONLY: HTTP server for FakeVaultwardenServer in ShiSecretsE2ETests.
         // Never linked into the broker binary or any library product.
