@@ -48,6 +48,10 @@ public struct AuditRow: Codable, Sendable, Equatable {
         case manifestSigFailed    = "manifest_sig_failed"
         case incidentBypass       = "incident_bypass"
         case brokerSessionInvalid = "broker_session_invalid"
+        /// The vault has no signed-in session (expected state, not a fault).
+        case vaultNotLoggedIn     = "not_logged_in"
+        /// The vault session is open but the key is not derived (expected state).
+        case vaultLocked          = "vault_locked"
         case auditWriteFailed     = "audit_write_failed"
         /// Review finding U3 — catch-all for unexpected exceptions thrown
         /// from the mint path. Distinct from `.incidentBypass` (reserved

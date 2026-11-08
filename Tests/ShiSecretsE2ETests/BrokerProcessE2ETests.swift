@@ -52,6 +52,10 @@ struct ShiSecretsBrokerProcessE2E {
         do {
             try await client.set(name: "premature", value: "x")
             Issue.record("secret.set before unlock must throw")
+        } catch BrokerClientError.vaultAuthRequired(let auth) {
+            // A locked / logged-out vault is a named state with a remedy,
+            // never an internal -32603.
+            #expect(auth.remedy.hasPrefix("shi secrets"), "remedy must be a shi command, got: \(auth.remedy)")
         } catch BrokerClientError.brokerError(_, let msg) {
             #expect(
                 msg.lowercased().contains("notauthenticated") ||

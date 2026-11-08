@@ -34,6 +34,11 @@ public enum WireErrorCode {
     public static let scopeViolation  = -32001
     public static let rateLimit       = -32002
     public static let bootstrapFailed = -32003
+    // Expected vault states (not faults): the caller must act, and the
+    // error `data` carries the machine-readable reason and the remedy
+    // command. See `VaultAuthRequired`. -32603 stays for real internal errors.
+    public static let notLoggedIn     = -32004
+    public static let vaultLocked     = -32005
 }
 
 /// Untyped JSON tree for `params` and `result` payloads where the wire

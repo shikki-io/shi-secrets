@@ -54,6 +54,20 @@ public enum BWClientError: Swift.Error, Sendable, Equatable {
     case notImplementedV1_1(call: String)
 }
 
+extension VaultAuthRequired {
+    /// Broker-layer classification: the vault-layer states plus the broker's
+    /// own "no authenticated session" errors. nil = a genuine failure.
+    public static func classifyBroker(_ error: Swift.Error) -> VaultAuthRequired? {
+        if let e = error as? BWClientError {
+            switch e {
+            case .sessionInvalidated, .notStarted: return .brokerHasNoSession
+            default: return nil
+            }
+        }
+        return classify(error)
+    }
+}
+
 // MARK: - Protocol surface (review finding #2)
 
 /// Minimal client surface the BrokerDaemon holds. Conforms to
