@@ -388,6 +388,31 @@ public actor VaultwardenClient {
         await sessionCache.setToken(tokenResponse.access_token, expiresAt: expiresAt)
     }
 
+    // MARK: - validToken()
+
+    /// The access token every API call authenticates with — renewed on demand.
+    ///
+    /// The token is a short-lived OAuth bearer (Vaultwarden issues `expires_in`
+    /// seconds, 2 h by default) held only in memory. `SessionCache` is built
+    /// with `refreshAction: nil` (see init), so nothing renews it in the
+    /// background: a broker that was unlocked at 17:00 held an expired token
+    /// by 19:00 while `vault.status` — which reads the vault KEY, not the
+    /// token — still said "unlocked". Every call then threw `notAuthenticated`
+    /// until the operator unlocked again, which refreshed the token as a side
+    /// effect.
+    ///
+    /// The client_credentials grant needs no master password, so renewing here
+    /// is safe and silent. If the exchange itself fails (server down, API key
+    /// revoked) that error propagates — it is a different, truthful failure.
+    private func validToken() async throws -> String {
+        if let token = await sessionCache.currentToken() { return token }
+        try await refreshToken()
+        guard let token = await sessionCache.currentToken() else {
+            throw VaultwardenClientError.notAuthenticated
+        }
+        return token
+    }
+
     // MARK: - Vault unlock
 
     private func captureKeyMaterial(from response: TokenResponse) {
@@ -473,9 +498,7 @@ public actor VaultwardenClient {
     /// The plaintext is returned ONLY to the calling actor; it is never
     /// logged, written to disk, or passed as a subprocess argument.
     public func fetchSecret(id: String) async throws -> [String: String] {
-        guard let token = await sessionCache.currentToken() else {
-            throw VaultwardenClientError.notAuthenticated
-        }
+        let token = try await validToken()
 
         let cipherURL = baseURL.appendingPathComponent("api/ciphers/\(id)")
         var request = URLRequest(url: cipherURL)
@@ -561,9 +584,7 @@ public actor VaultwardenClient {
     /// `[error: cannot decrypt]` on the web, an empty vault in the app.
     @discardableResult
     public func createCipher(name: String, value: String) async throws -> String {
-        guard let token = await sessionCache.currentToken() else {
-            throw VaultwardenClientError.notAuthenticated
-        }
+        let token = try await validToken()
         let keys = try await vaultKey.require()
         let encName  = try BitwardenCrypto.encrypt(name,  using: keys)
         let encValue = try BitwardenCrypto.encrypt(value, using: keys)
@@ -596,9 +617,7 @@ public actor VaultwardenClient {
 
     /// Delete a vault cipher by its UUID.
     public func deleteCipher(id: String) async throws {
-        guard let token = await sessionCache.currentToken() else {
-            throw VaultwardenClientError.notAuthenticated
-        }
+        let token = try await validToken()
 
         let url = baseURL.appendingPathComponent("api/ciphers/\(id)")
         var request = URLRequest(url: url)
@@ -619,9 +638,7 @@ public actor VaultwardenClient {
     /// List all vault items the service account has access to.
     /// Returns an array of `[id: String, name: String]` dictionaries.
     public func listSecrets() async throws -> [[String: String]] {
-        guard let token = await sessionCache.currentToken() else {
-            throw VaultwardenClientError.notAuthenticated
-        }
+        let token = try await validToken()
 
         let url = baseURL.appendingPathComponent("api/ciphers")
         var request = URLRequest(url: url)
@@ -670,9 +687,7 @@ public actor VaultwardenClient {
     /// EncString" needs no key. It also means this runs on a machine that
     /// cannot decrypt, which is where you most want to check.
     public func auditEncryption() async throws -> EncryptionAudit {
-        guard let token = await sessionCache.currentToken() else {
-            throw VaultwardenClientError.notAuthenticated
-        }
+        let token = try await validToken()
         var request = URLRequest(url: baseURL.appendingPathComponent("api/ciphers"))
         request.httpMethod = "GET"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -731,9 +746,7 @@ public actor VaultwardenClient {
     /// source. The report says so at the end for exactly this reason.
     public func reEncryptLegacyPlaintext(dryRun: Bool = true) async throws -> ReEncryptionReport {
         let keys = try await vaultKey.require()
-        guard let token = await sessionCache.currentToken() else {
-            throw VaultwardenClientError.notAuthenticated
-        }
+        let token = try await validToken()
 
         var report = ReEncryptionReport()
         report.dryRun = dryRun

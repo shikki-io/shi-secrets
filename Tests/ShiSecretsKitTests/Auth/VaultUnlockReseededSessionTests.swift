@@ -229,4 +229,47 @@ struct VaultUnlockReseededSessionTests {
         let secrets = try await vc.listSecrets()
         #expect(secrets.isEmpty, "nominal connect+unlock path: empty vault")
     }
+
+    // T-URG-03 ────────────────────────────────────────────────────────────
+    // The 17:00-works / 19:00-notAuthenticated regression (2026-11-08).
+    // The vault was unlocked (key held), the 2 h access token then expired,
+    // and nothing renews it in the background. No unlock() is called here:
+    // the call itself must renew the token, because client_credentials needs
+    // no master password.
+    @Test("T-URG-03: expired token is renewed by the API call itself, no unlock needed")
+    func test_urg03_expiredToken_renewedOnDemand() async throws {
+        let (protectedKey, _) = try makeFixtureProtectedKey()
+        installMockResponses(protectedKey: protectedKey)
+
+        let vc = try makeMockClient()
+        await vc.seedTokenFromCache(
+            VaultwardenClient.CachedToken(
+                accessToken: "expired-tok", expiresAt: Date(timeIntervalSinceNow: -7200)
+            )
+        )
+
+        let secrets = try await vc.listSecrets()
+        #expect(secrets.isEmpty, "listSecrets must renew the expired token, not throw notAuthenticated")
+    }
+
+    // T-URG-04 ────────────────────────────────────────────────────────────
+    // Renewal must not mask a real failure: when the token exchange itself is
+    // refused, the caller sees that, not a generic notAuthenticated.
+    @Test("T-URG-04: a refused renewal surfaces tokenExchangeFailed, not notAuthenticated")
+    func test_urg04_refusedRenewal_isNamed() async throws {
+        VaultUnlockMockProtocol.tokenBody = nil   // mock answers HTTP 400
+        defer { VaultUnlockMockProtocol.tokenBody = nil }
+
+        let vc = try makeMockClient()
+        do {
+            _ = try await vc.listSecrets()
+            Issue.record("listSecrets must throw when the token cannot be renewed")
+        } catch let e as VaultwardenClientError {
+            guard case .tokenExchangeFailed(let status) = e else {
+                Issue.record("expected tokenExchangeFailed, got \(e)")
+                return
+            }
+            #expect(status == 400)
+        }
+    }
 }
