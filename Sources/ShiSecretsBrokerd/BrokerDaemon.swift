@@ -425,7 +425,18 @@ public actor BrokerDaemon {
                 }
                 // Vault entry missing or empty field — fall through to token.
             } catch {
-                // Vault unavailable — fall through to token path so callers
+                // Locked / logged out is an expected state the operator must
+                // fix: refuse with a named reason instead of handing back a
+                // token the unix client cannot use. Revoke the minted jti.
+                if let auth = VaultAuthRequired.classifyBroker(error) {
+                    await compensateRevoke(jti: jti, scope: request.scope, now: now)
+                    let reason = auth.denyReason
+                    if let resp = await writeDenyOrFailClosed(
+                        jti: jti, request: request, wrapped: wrapped, now: now, reason: reason
+                    ) { return resp }
+                    return .deny(reason)
+                }
+                // Other vault failures: fall through to token path so callers
                 // can still obtain a token for async re-fetch via MCP.
             }
         }

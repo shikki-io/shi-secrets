@@ -235,6 +235,10 @@ public actor BrokerWireDispatcher {
             ))
             return WireResponse(id: request.id, result: .object(["ok": .bool(true)]))
         } catch {
+            // Locked / logged-out is an expected state: named code + remedy.
+            if let auth = VaultAuthRequired.classifyBroker(error) {
+                return WireResponse(id: request.id, error: auth.wireError())
+            }
             return WireResponse(id: request.id, error: WireError(
                 code: WireErrorCode.internalError,
                 message: "secret.set failed: \(error)"
@@ -315,6 +319,10 @@ public actor BrokerWireDispatcher {
             ))
             return WireResponse(id: request.id, result: .array(items))
         } catch {
+            // Locked / logged-out is an expected state: named code + remedy.
+            if let auth = VaultAuthRequired.classifyBroker(error) {
+                return WireResponse(id: request.id, error: auth.wireError())
+            }
             return WireResponse(id: request.id, error: WireError(
                 code: WireErrorCode.internalError,
                 message: "secret.list failed: \(error)"
@@ -363,6 +371,10 @@ public actor BrokerWireDispatcher {
             ))
             return WireResponse(id: request.id, result: .object(["ok": .bool(true)]))
         } catch {
+            // Locked / logged-out is an expected state: named code + remedy.
+            if let auth = VaultAuthRequired.classifyBroker(error) {
+                return WireResponse(id: request.id, error: auth.wireError())
+            }
             return WireResponse(id: request.id, error: WireError(
                 code: WireErrorCode.internalError,
                 message: "secret.delete failed: \(error)"
@@ -465,6 +477,10 @@ public actor BrokerWireDispatcher {
             return WireResponse(id: request.id, result: .object(["ok": .bool(true)]))
         } catch {
             // Surface the failure clearly; do NOT echo the password back.
+            if let auth = VaultAuthRequired.classifyBroker(error), auth.kind == .notLoggedIn,
+               auth.remedy != VaultAuthRequired.unlockCommand {
+                return WireResponse(id: request.id, error: auth.wireError())
+            }
             return WireResponse(id: request.id, error: WireError(
                 code: WireErrorCode.denied,
                 message: "vault.unlock failed: \(error)"
