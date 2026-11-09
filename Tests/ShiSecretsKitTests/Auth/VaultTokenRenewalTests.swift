@@ -20,12 +20,19 @@ private final class RenewalMockProtocol: URLProtocol, @unchecked Sendable {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var issued: [String] = []
     nonisolated(unsafe) private static var cipherBearers: [String] = []
+    nonisolated(unsafe) private static var failToken = false
+    nonisolated(unsafe) private static var tokenHits = 0
 
     static func reset() {
         lock.lock(); defer { lock.unlock() }
         issued = []
         cipherBearers = []
+        failToken = false
+        tokenHits = 0
     }
+    static func failTokenEndpoint(_ on: Bool) { lock.lock(); failToken = on; lock.unlock() }
+    /// Every hit on the token endpoint, successful or not.
+    static var tokenRequests: Int { lock.lock(); defer { lock.unlock() }; return tokenHits }
     static var issuedTokens: [String] { lock.lock(); defer { lock.unlock() }; return issued }
     static var bearersSeenByCipherEndpoint: [String] { lock.lock(); defer { lock.unlock() }; return cipherBearers }
 
@@ -40,6 +47,14 @@ private final class RenewalMockProtocol: URLProtocol, @unchecked Sendable {
         var body = Data()
 
         if path.hasSuffix("connect/token") {
+            Self.lock.lock(); Self.tokenHits += 1; let failing = Self.failToken; Self.lock.unlock()
+            if failing {
+                let resp = HTTPURLResponse(url: request.url!, statusCode: 503, httpVersion: "HTTP/1.1", headerFields: nil)!
+                client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: Data("{}".utf8))
+                client?.urlProtocolDidFinishLoading(self)
+                return
+            }
             let fresh = "issued-\(UUID().uuidString)"
             Self.lock.lock(); Self.issued.append(fresh); Self.lock.unlock()
             body = Data(#"{"access_token":"\#(fresh)","expires_in":7200,"token_type":"Bearer"}"#.utf8)
@@ -144,14 +159,12 @@ struct VaultTokenRenewalTests {
     }
 
     // T-REN-04 ────────────────────────────────────────────────────────────
-    // A burst of concurrent calls on an empty cache ALL succeed. This
-    // deliberately does NOT assert "exactly one renewal": validToken() has no
-    // in-flight coalescing (the actor re-enters at each await, and
-    // SessionCache is only a token store), so a burst may renew more than
-    // once. The contract here is correctness under concurrency: every call
-    // completes and every call authenticates with a token the server issued.
-    @Test("T-REN-04: concurrent burst on an empty cache -> every call succeeds with an issued token")
-    func test_ren04_concurrentBurst_everyCallSucceeds() async throws {
+    // A burst of concurrent calls on an empty cache is SINGLE-FLIGHT: exactly
+    // one renewal, and every call authenticates with that one token. Without
+    // the in-flight guard the actor re-enters at each await and the burst
+    // mints several tokens.
+    @Test("T-REN-04: concurrent burst on an empty cache -> exactly one renewal, shared by all")
+    func test_ren04_concurrentBurst_isSingleFlight() async throws {
         RenewalMockProtocol.reset()
         let vc = try makeRenewalClient()
         let burst = 8
@@ -163,10 +176,45 @@ struct VaultTokenRenewalTests {
             for try await count in group { #expect(count == 0) }
         }
 
-        let issued = Set(RenewalMockProtocol.issuedTokens)
+        let issued = RenewalMockProtocol.issuedTokens
         let bearers = RenewalMockProtocol.bearersSeenByCipherEndpoint
-        #expect(!issued.isEmpty, "at least one renewal must have happened")
+        #expect(issued.count == 1, "a burst of \(burst) must share ONE renewal, saw \(issued.count)")
         #expect(bearers.count == burst)
-        #expect(bearers.allSatisfy { issued.contains($0) }, "no call may go out with a token the server did not issue")
+        #expect(Set(bearers) == Set(issued), "every call must carry the single shared token")
+    }
+
+    // T-REN-05 ────────────────────────────────────────────────────────────
+    // A FAILED shared renewal: every waiter sees the error, and the very next
+    // call starts a FRESH renewal instead of re-awaiting the dead task.
+    @Test("T-REN-05: failed shared renewal -> all waiters fail, the next call renews afresh")
+    func test_ren05_failedSharedRenewal_thenFreshRenewalSucceeds() async throws {
+        RenewalMockProtocol.reset()
+        RenewalMockProtocol.failTokenEndpoint(true)
+        let vc = try makeRenewalClient()
+        let burst = 8
+
+        let outcomes = await withTaskGroup(of: Bool.self) { group -> [Bool] in
+            for _ in 0..<burst {
+                group.addTask {
+                    do { _ = try await vc.listSecrets(); return false }
+                    catch VaultwardenClientError.tokenExchangeFailed(let status) { return status == 503 }
+                    catch { return false }
+                }
+            }
+            var all: [Bool] = []
+            for await ok in group { all.append(ok) }
+            return all
+        }
+        #expect(outcomes.count == burst)
+        #expect(outcomes.allSatisfy { $0 }, "every waiter must see the shared tokenExchangeFailed(503)")
+        #expect(RenewalMockProtocol.tokenRequests == 1, "the failing burst must share one attempt")
+
+        // Server recovers: the next call must NOT re-await the dead task.
+        RenewalMockProtocol.failTokenEndpoint(false)
+        let secrets = try await vc.listSecrets()
+        #expect(secrets.isEmpty)
+        #expect(RenewalMockProtocol.tokenRequests == 2, "a fresh renewal, not the cached failure")
+        #expect(RenewalMockProtocol.issuedTokens.count == 1)
+        #expect(RenewalMockProtocol.bearersSeenByCipherEndpoint == RenewalMockProtocol.issuedTokens)
     }
 }

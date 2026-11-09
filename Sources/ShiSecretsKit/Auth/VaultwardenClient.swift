@@ -154,6 +154,8 @@ public actor VaultwardenClient {
     /// Everything the server told us at token time, kept so `unlock` does not
     /// have to make a second round trip.
     private var accountProtectedKey: String?
+    /// The renewal currently in progress, if any — see `validToken()`.
+    private var inFlightRenewal: Task<String, Error>?
     private var accountKDF: VaultKDFParameters?
 
     /// How many fields came back unencrypted this session. Non-zero means the
@@ -404,13 +406,34 @@ public actor VaultwardenClient {
     /// The client_credentials grant needs no master password, so renewing here
     /// is safe and silent. If the exchange itself fails (server down, API key
     /// revoked) that error propagates — it is a different, truthful failure.
+    ///
+    /// Single-flight: callers that arrive while a renewal is running await the
+    /// SAME renewal and all receive its token (or its error). Without this the
+    /// actor re-enters at every `await` and a burst of N calls mints N tokens.
+    /// A FAILED renewal is cleared on completion, so the next call starts a
+    /// fresh one rather than re-awaiting a dead task.
     private func validToken() async throws -> String {
         if let token = await sessionCache.currentToken() { return token }
-        try await refreshToken()
-        guard let token = await sessionCache.currentToken() else {
-            throw VaultwardenClientError.notAuthenticated
+        // Re-check AFTER the suspension above: another caller may have started
+        // a renewal while this one was suspended. There is no `await` between
+        // this check and the assignment below, so no second renewal can slip in.
+        if let running = inFlightRenewal { return try await running.value }
+
+        let renewal = Task<String, Error> { [self] in
+            // Clear on every exit path (success, throw) BEFORE any waiter
+            // resumes: this runs on the actor, so there is no gap in which a
+            // new caller could observe a finished task.
+            defer { inFlightRenewal = nil }
+            // The cache may have been filled (unlock, connect) while queued.
+            if let token = await sessionCache.currentToken() { return token }
+            try await refreshToken()
+            guard let token = await sessionCache.currentToken() else {
+                throw VaultwardenClientError.notAuthenticated
+            }
+            return token
         }
-        return token
+        inFlightRenewal = renewal
+        return try await renewal.value
     }
 
     // MARK: - Vault unlock
