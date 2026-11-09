@@ -3,3 +3,15 @@
 *.xcodeproj
 DerivedData/
 .DS_Store
+
+# kagami runtime artefacts: per-run bookkeeping, shard DBs (drained into ~/.kagami/history.db),
+# and any db/WAL/lock a drain leaves beside the registry. scopes.override.toml is the
+# operator-maintained source and stays tracked.
+.kagami/runs/
+.kagami/tmp/
+.kagami/history.db*
+.kagami/*.db
+.kagami/*.sqlite
+.kagami/*.db-wal
+.kagami/*.db-shm
+.kagami/*.write-lock
