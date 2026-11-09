@@ -76,36 +76,39 @@ steps:
     commands:
       - swift build --build-tests
 
-  # One invocation per scope, because `--scope` is single-valued (the last one wins).
+  # Every scope the repository declares, discovered from the manifest. No list of scope names
+  # lives in this file, so a scope added to `.kagami/scopes.override.toml` is gated the moment it
+  # exists and this file cannot drift out of sync with it (the old hand-written list of five had
+  # already missed two declared scopes). `kagami test --all --strict` is the end state; it is not
+  # usable yet because it cannot exclude a scope and four declared ones cannot be gated today.
   #
-  # The five scopes below are the ones that pass on `main`. Two are deliberately NOT gated yet,
-  # and must not be added until they are fixed, because a gate that excludes a red suite silently
-  # is worse than one that names it:
-  #   * ShiSecretsE2ETests         — 0/7, "broker socket did not appear". Red on `main` too.
-  #   * ShiSecretsIntegrationTests — hangs at 0 % CPU. Hangs on `main` too.
-  # Both are tracked in @db; this list grows to `kagami test --all --strict` once they are green,
-  # which is the end state the rest of the fleet already uses.
-  kagami-kit:
+  # `--scope` is single-valued (the last one wins), so this is one invocation per scope, and
+  # kagami's exit code is the verdict (0 green, 1 red, 2 could not run), never piped into a
+  # filter. Only the scope LISTING is read. Every failure is collected so one red scope does not
+  # hide the others, and the step fails closed if any scope failed or if nothing was discovered.
+  #
+  # NOT_GATED_YET is the single place a scope is excluded, by name, with its measured reason.
+  # A gate that excludes a red suite silently is worse than one that names it. Delete an entry
+  # the day its scope is green; when the list is empty this step becomes `kagami test --all --strict`.
+  #   ShiSecretsE2ETests           0/7, "broker socket did not appear" (red on main too)
+  #   ShiSecretsBrokerProcessE2E   0/7 red (same broker-socket cause)
+  #   ShiSecretsIntegrationTests   hangs at 0 % CPU (hangs on main too)
+  #   AdminKeyCeremonyTests        exit 2, could not run (measured 2026-11-09)
+  # All four are tracked in @db.
+  kagami-scopes:
     image: bash
     commands:
-      - kagami test --scope ShiSecretsKitTests --strict
-
-  kagami-brokerd:
-    image: bash
-    commands:
-      - kagami test --scope ShiSecretsBrokerdTests --strict
-
-  kagami-client:
-    image: bash
-    commands:
-      - kagami test --scope ShiSecretsClientTests --strict
-
-  kagami-cli:
-    image: bash
-    commands:
-      - kagami test --scope ShiSecretsCLITests --strict
-
-  kagami-drivers:
-    image: bash
-    commands:
-      - kagami test --scope ShiSecretsDriversTests --strict
+      - |
+        NOT_GATED_YET=" ShiSecretsE2ETests ShiSecretsBrokerProcessE2E ShiSecretsIntegrationTests AdminKeyCeremonyTests "
+        LISTING="$$(kagami test --scopes)"
+        SCOPES="$$(printf '%s\n' "$$LISTING" | sed -n 's/^  \([A-Za-z0-9_.-][A-Za-z0-9_.-]*\)$/\1/p')"
+        [ -n "$$SCOPES" ] || { echo "no scope discovered from .kagami: refusing to pass on nothing"; exit 1; }
+        FAILED=""
+        for SCOPE in $$SCOPES; do
+          case "$$NOT_GATED_YET" in
+            *" $$SCOPE "*) echo "skip $$SCOPE (NOT_GATED_YET)"; continue ;;
+          esac
+          echo "== kagami test --scope $$SCOPE --strict"
+          kagami test --scope "$$SCOPE" --strict || FAILED="$$FAILED $$SCOPE"
+        done
+        [ -z "$$FAILED" ] || { echo "RED:$$FAILED"; exit 1; }

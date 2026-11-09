@@ -1,8 +1,0 @@
-{
-  "drain" : "merged",
-  "drain_rows" : 17,
-  "drained_at" : "2026-11-08T12:29:23Z",
-  "pid" : 59878,
-  "run_id" : "BF4B92B2-2A78-4650-AA89-DB19AABE5C32",
-  "source_database" : "/Users/jeoffrey/.kagami/history.db"
-}
