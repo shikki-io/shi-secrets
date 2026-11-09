@@ -32,8 +32,8 @@ struct ShiSecretsBrokerProcessE2E {
     // MARK: - Fixtures
 
     static let fixtureClientID     = "e2e-client-id"
-    static let fixtureClientSecret = "e2e-client-secret-bbbbbbb"
-    static let fixturePassword     = "FixtureMasterPw42!"
+    static let fixtureClientSecret = "e2e-client-secret-bbbbbbb"  // shi-doctor: secret-scan exempt — fake fixture credential for the in-process FakeVaultwardenServer
+    static let fixturePassword     = "FixtureMasterPw42!"  // shi-doctor: secret-scan exempt — fake fixture credential for the in-process FakeVaultwardenServer
     static let fixtureEmail        = "fixture@e2e.local"
 
     // MARK: - Main scenario
@@ -168,7 +168,7 @@ struct ShiSecretsBrokerProcessE2E {
 
         do {
             try await client.vaultUnlock(
-                masterPassword: "totally-wrong-password",
+                masterPassword: "totally-wrong-password", // shi-doctor: secret-scan exempt — deliberately wrong fixture password
                 email: Self.fixtureEmail
             )
             Issue.record("unlock with wrong password must throw")
