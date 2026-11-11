@@ -32,8 +32,8 @@ struct ShiSecretsBrokerProcessE2E {
     // MARK: - Fixtures
 
     static let fixtureClientID     = "e2e-client-id"
-    static let fixtureClientSecret = "e2e-client-secret-bbbbbbb"
-    static let fixturePassword     = "FixtureMasterPw42!"
+    static let fixtureClientSecret = "e2e-client-secret-bbbbbbb"  // shi-doctor: secret-scan exempt — fake fixture credential for the in-process FakeVaultwardenServer
+    static let fixturePassword     = "FixtureMasterPw42!"  // shi-doctor: secret-scan exempt — fake fixture credential for the in-process FakeVaultwardenServer
     static let fixtureEmail        = "fixture@e2e.local"
 
     // MARK: - Main scenario
@@ -52,6 +52,10 @@ struct ShiSecretsBrokerProcessE2E {
         do {
             try await client.set(name: "premature", value: "x")
             Issue.record("secret.set before unlock must throw")
+        } catch BrokerClientError.vaultAuthRequired(let auth) {
+            // A locked / logged-out vault is a named state with a remedy,
+            // never an internal -32603.
+            #expect(auth.remedy.hasPrefix("shi secrets"), "remedy must be a shi command, got: \(auth.remedy)")
         } catch BrokerClientError.brokerError(_, let msg) {
             #expect(
                 msg.lowercased().contains("notauthenticated") ||
@@ -164,7 +168,7 @@ struct ShiSecretsBrokerProcessE2E {
 
         do {
             try await client.vaultUnlock(
-                masterPassword: "totally-wrong-password",
+                masterPassword: "totally-wrong-password", // shi-doctor: secret-scan exempt — deliberately wrong fixture password
                 email: Self.fixtureEmail
             )
             Issue.record("unlock with wrong password must throw")
