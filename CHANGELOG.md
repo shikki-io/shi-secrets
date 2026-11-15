@@ -58,6 +58,22 @@ It is not a **major** under this project's own numbering, because the `0.`
 major already carries that meaning for SwiftPM: `0.10.0` is as breaking as a
 consumer's resolver can treat it, and nothing in the source demands more.
 
-**Consumers must raise their floor by hand** — `from: "0.9.1"` will not move to
-`0.10.0`. The known declarations are `shikki` (`from: "0.9.1"`), `shi-env`
-(`from: "0.1.0"`) and `ShikkiMCP` (not yet declared, waiting on this release).
+### Consumers float to this release automatically
+
+`from:` in SwiftPM means **up to the next major**, and for a `0.x` version the
+next major is `1.0.0` — so a consumer declaring `from: "0.9.1"` *is* in range for
+`0.10.0`. Only `.upToNextMinor(from:)` would exclude it.
+
+Measured rather than reasoned: a probe package whose only dependency is
+`.package(url: ".../shi-secrets.git", from: "0.9.1")` resolves
+**shi-secrets 0.10.0** with `swift-crypto 4.5.2`, exit 0.
+
+So `shikki` (`from: "0.9.1"`) and `shi-env` (`from: "0.1.0"`) pick this up on
+their next resolve with no edit, and `swift-crypto` 4.x arrives with it. No
+product API changed, so the API surface they see is identical; what reaches them
+is the dependency major. `ShikkiMCP` declares no dependency on shi-secrets yet
+and still needs its line added.
+
+A probe pairing shi-secrets `0.10.0` with CoreKit `from: "0.17.0"` resolves both,
+with `swift-crypto 4.5.2`, exit 0 — which is the conflict this release exists to
+remove.
