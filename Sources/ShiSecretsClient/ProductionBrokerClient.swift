@@ -15,7 +15,7 @@ import ShiSecretsKit
 //   secret.list                   → BrokerClient.list(filter:)        ✓ dispatched W3
 //   secret.set                    → BrokerClient.set(name:value:)     ✓ dispatched W3
 //   secret.delete                 → BrokerClient.delete(name:)        ✓ dispatched W3 (added 2026-11-02)
-//   secret.rotate                 → BrokerClient.rotate(name:)        ✗ Phase 0.5 — not dispatched; throws .methodNotImplemented
+//   secret.rotate                 → BrokerClient.rotate(name:)        ✓ dispatched feat/secret-rotate-2026-11-02
 //   token.revoke                  → BrokerClient.revoke(jti:)         ✗ Phase 0.5 — not dispatched
 //   token.revokeAllBots           → BrokerClient.revokeAllBots(dryRun:force:)        ✗ Phase 0.5
 //   token.revokeAllBotsSigned     → BrokerClient.revokeAllBotsSigned(_:)             ✗ Phase 0.5
@@ -69,14 +69,10 @@ public actor ProductionBrokerClient: BrokerClient {
         _ = try await call(method: "secret.delete", params: params)
     }
 
-    /// Phase 0.5 placeholder. `secret.rotate` is not yet handled by the
-    /// broker dispatcher — calling this method throws `.methodNotImplemented`
-    /// rather than forwarding the unhandled wire frame (which would return
-    /// -32601 Method not found from the dispatcher's default arm).
     public func rotate(name: String) async throws -> RotationResult {
-        throw BrokerClientError.methodNotImplemented(
-            "secret.rotate is not yet dispatched by the broker (Phase 0.5)"
-        )
+        let params: JSONValue = .object(["name": .string(name)])
+        let result = try await call(method: "secret.rotate", params: params)
+        return try decodeResult(result, as: RotationResult.self)
     }
 
     // MARK: - token.*

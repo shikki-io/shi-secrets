@@ -78,9 +78,11 @@ public func allV1Drivers(
     ]
 }
 
-/// Minimal write-back surface drivers need on the BWClient. Declared here
-/// so ShiSecretsBrokerd (which owns the real BWClient) can conform
+/// Minimal read + write-back surface drivers need on the BWClient. Declared
+/// here so ShiSecretsBrokerd (which owns the real BWClient) can conform
 /// and the drivers target does not have to link against the executable.
 public protocol BWClientWriteBack: Sendable {
+    /// Read a vault entry's fields. Returns `[:]` when the entry is absent.
+    func get(name: String) async throws -> [String: String]
     func update(name: String, fields: [String: String]) async throws
 }

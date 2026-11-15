@@ -1,6 +1,7 @@
 // kagami-scope: ShiSecretsBrokerdTests
 import Crypto
 import Foundation
+import ShiSecretsDrivers
 import ShiSecretsKit
 
 // shikki-secrets-brokerd — Wave 5 standalone daemon entrypoint.
@@ -18,6 +19,29 @@ import ShiSecretsKit
 //
 // Signal handling: SIGTERM / SIGINT cancel the watchdog task, which calls
 // socket.shutdown() so accept() returns EBADF and runAcceptLoop exits.
+
+// MARK: - URLSessionHTTPTransport (production DriverHTTPTransport)
+
+/// URLSession-backed implementation of `DriverHTTPTransport`. Production
+/// wire for `allV1Drivers`; tests inject `RecordingTransport` instead.
+struct URLSessionHTTPTransport: DriverHTTPTransport {
+    func send(_ request: DriverHTTPRequest) async throws -> DriverHTTPResponse {
+        guard let url = URL(string: request.url) else {
+            throw DriverHTTPError.transportFailed(message: "invalid URL: \(request.url)")
+        }
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = request.method
+        urlRequest.httpBody = request.body
+        for (key, value) in request.headers {
+            urlRequest.setValue(value, forHTTPHeaderField: key)
+        }
+        let (data, response) = try await URLSession.shared.data(for: urlRequest)
+        let httpResponse = response as? HTTPURLResponse
+        let status = httpResponse?.statusCode ?? 0
+        let headers = (httpResponse?.allHeaderFields as? [String: String]) ?? [:]
+        return DriverHTTPResponse(status: status, headers: headers, body: data)
+    }
+}
 
 // MARK: - Sealed-exit helpers (testable pure functions)
 
@@ -189,7 +213,10 @@ struct BrokerMain {
         let audit     = AuditWriter()
         let seams     = SeamsWriter()
         let registry  = TokenRegistry()
-        let drivers   = DriverRegistry()
+        let transport = URLSessionHTTPTransport()
+        let drivers   = DriverRegistry(
+            drivers: allV1Drivers(transport: transport, bwClient: bwClient)
+        )
         let engine    = RotationEngine(
             drivers: drivers, audit: audit, seams: seams, registry: registry
         )

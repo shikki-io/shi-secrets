@@ -17,6 +17,15 @@ import ShiSecretsKit
 // tests exercise the drivers via a RecordingBWClient; production wires
 // the real one through the BrokerDaemon DI graph).
 
+// MARK: - Typed Codable response models
+
+/// The JSON object OVH returns on a successful POST /me/api/credential.
+private struct OVHCreateCredentialResponse: Decodable {
+    let applicationKey: String
+}
+
+// MARK: - DriverOVH
+
 public struct DriverOVH: SecretRotationDriver {
 
     public enum Mode: String, Sendable, Equatable {
@@ -48,6 +57,13 @@ public struct DriverOVH: SecretRotationDriver {
     }
 
     public func rotate(entry: VaultEntryRef, trigger: RotationTrigger) async -> RotationOutcome {
+        // OVH production requires HMAC-SHA1 signed requests (X-Ovh-Application +
+        // X-Ovh-Consumer + X-Ovh-Timestamp + X-Ovh-Signature). That signing scheme
+        // is not yet implemented; refuse clearly rather than send an unsigned request
+        // that OVH would reject anyway. Sandbox mode carries no auth requirement.
+        if mode == .production {
+            return .failed(reason: "ovh production_unsupported: HMAC-SHA1 signing not implemented — use .sandbox or the human runbook")
+        }
         let url = baseURL + "/me/api/credential"
         let request = DriverHTTPRequest(
             method: "POST",
@@ -60,17 +76,36 @@ public struct DriverOVH: SecretRotationDriver {
             guard (200 ..< 300).contains(response.status) else {
                 return .failed(reason: "ovh http \(response.status)")
             }
-            // Best-effort parse: the response may be empty in sandbox runs.
-            var fields: [String: String] = [:]
-            if !response.body.isEmpty,
-               let json = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
-               let newKey = json["applicationKey"] as? String {
-                fields["applicationKey"] = newKey
+            // Empty body in sandbox runs is expected — OVH sandbox may not provide
+            // an actual credential value; skip write-back and report success.
+            if response.body.isEmpty {
+                _ = trigger
+                return .rotated
             }
-            if let bwClient, !fields.isEmpty {
-                try await bwClient.update(name: entry.name, fields: fields)
+            // Non-empty body: use typed decode to avoid a silent false-success when the
+            // response is missing the required field (vault would keep the stale key).
+            let decoded: OVHCreateCredentialResponse
+            do {
+                decoded = try JSONDecoder().decode(OVHCreateCredentialResponse.self, from: response.body)
+            } catch {
+                return .failed(
+                    reason: "ovh rotated at vendor but response missing required field " +
+                            "'applicationKey' — vault not updated. Update the vault manually. " +
+                            "Decode error: \(error)"
+                )
             }
-            _ = trigger   // trigger currently unused; drivers may tag logs in W5
+            if let bw = bwClient {
+                do {
+                    try await bw.update(name: entry.name, fields: ["applicationKey": decoded.applicationKey])
+                } catch {
+                    return .failed(
+                        reason: "ovh rotated at vendor but vault write-back failed — " +
+                                "new key exists at vendor, vault still holds the old value. " +
+                                "Update the vault manually. Write-back error: \(error)"
+                    )
+                }
+            }
+            _ = trigger
             return .rotated
         } catch {
             return .failed(reason: "ovh transport: \(error)")

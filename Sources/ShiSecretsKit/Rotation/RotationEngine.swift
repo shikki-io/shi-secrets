@@ -583,7 +583,9 @@ public actor RotationEngine {
 
     /// Extracts a vendor string from a scope like `ovh/*` → `ovh`.
     /// Falls back to `unknown` if the scope has no slash.
-    private static func vendor(from scope: String) -> String {
+    /// Public so that `BrokerWireDispatch` can resolve the driver for
+    /// manual-rotation requests without duplicating this extraction logic.
+    public static func vendor(from scope: String) -> String {
         if let slash = scope.firstIndex(of: "/") {
             return String(scope[..<slash])
         }

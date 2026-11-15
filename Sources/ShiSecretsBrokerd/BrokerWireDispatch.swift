@@ -49,6 +49,9 @@ public actor BrokerWireDispatcher {
         case "secret.delete":
             return await dispatchSecretDelete(request, peerUid: peerUid)
 
+        case "secret.rotate":
+            return await dispatchSecretRotate(request, peerUid: peerUid)
+
         // feat/vault-unlock-2026-11-01 — vault key lifecycle surface.
         // vault.unlock: typed once by the operator; derives the SymmetricKeyPair
         //   and holds it in memory only. Never logged, never stored.
@@ -366,6 +369,207 @@ public actor BrokerWireDispatcher {
             return WireResponse(id: request.id, error: WireError(
                 code: WireErrorCode.internalError,
                 message: "secret.delete failed: \(error)"
+            ))
+        }
+    }
+
+    // MARK: - secret.rotate
+
+    /// Dispatches `secret.rotate` to the `RotationEngine`.
+    ///
+    /// Protocol:
+    ///   1. Peer-UID gate (mutation requires owner).
+    ///   2. Params decode: `{ name: String }`.
+    ///   3. ScopePolicy blast-radius check.
+    ///   4. Entry lookup in the engine's in-memory registry.
+    ///   5. Vendor resolution + driver lookup.
+    ///   6. Driver call with `.manual(op: "secret.rotate")` trigger.
+    ///   7. `RotationOutcome` mapped exhaustively — no `default:` arm.
+    ///   8. Audit row on success; `handleFailure` + error on driver failure.
+    ///
+    /// Wire response on success: JSON-encoded `RotationResult`.
+    ///   - `secretName`    : name of the rotated entry.
+    ///   - `oldJtiSuffix`  : last 4 hex chars of the rotation-event UUID
+    ///                       (display-only; the engine has no per-entry JTI).
+    ///   - `invalidAt`     : ISO 8601 timestamp when the old credential was
+    ///                       replaced (`lastRotated` of the post-rotation entry).
+    private func dispatchSecretRotate(_ request: WireRequest, peerUid: UInt32) async -> WireResponse {
+        // CRIT-2: gate on owner identity before any mutation.
+        if let denied = await requireOwner(request, peerUid: peerUid) { return denied }
+
+        struct RotateParams: Decodable {
+            let name: String
+        }
+        let params: RotateParams
+        do {
+            params = try decodeParams(RotateParams.self, from: request.params)
+        } catch {
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.invalidParams,
+                message: "Invalid params for secret.rotate: \(error)"
+            ))
+        }
+
+        // v0.4.2 @ronin FINDING-1 fix: enforce ScopePolicy on rotate path.
+        if let policy = daemon.systemScopePolicy, !policy.canRead(path: params.name) {
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.invalidParams,
+                message: "secret.rotate denied — path outside this system's blast-radius scope"
+            ))
+        }
+
+        // Vault must be unlocked before any rotation can proceed.
+        let vaultUnlocked = await daemon.bwClient.isVaultUnlocked
+        guard vaultUnlocked else {
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.internalError,
+                message: "secret.rotate: vault is locked — run vault.unlock first"
+            ))
+        }
+
+        // Look up the vault entry via the live BWClient rather than the
+        // in-memory engine registry, so the production path works without
+        // requiring a separate seed step (engine.seed is test-only).
+        let vaultFields: [String: String]
+        do {
+            vaultFields = try await daemon.bwClient.get(name: params.name)
+        } catch {
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.internalError,
+                message: "secret.rotate: vault.get('\(params.name)') threw \(error)"
+            ))
+        }
+        guard !vaultFields.isEmpty else {
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.invalidParams,
+                message: "secret.rotate: no secret named '\(params.name)' in vault"
+            ))
+        }
+        // Build VaultEntryRef from vault fields. The "scope" field identifies
+        // the vendor (e.g. "brevo/BREVO_API_KEY"); fall back to the secret name
+        // when the entry has no explicit scope stored.
+        let scope = vaultFields["scope"] ?? params.name
+        let entry = VaultEntryRef(
+            name: params.name,
+            scope: scope,
+            tier: .warm,
+            usageState: .warm,
+            lastRotated: Date(timeIntervalSince1970: 0),
+            rotationDue: Date()
+        )
+
+        // Resolve vendor from scope (e.g. "ovh/OVH_APP_KEY" → "ovh").
+        let vendorName = RotationEngine.vendor(from: entry.scope)
+
+        // A secret with no driver for its vendor is a clear refusal — not a fake success.
+        guard let driver = await daemon.drivers.resolve(vendor: vendorName) else {
+            // Surface an actionable hint when the entry has no `scope` field — the most
+            // common operator mistake. The fallback `scope = params.name` produces a
+            // vendor name that matches no registered driver.
+            let noScopeHint: String
+            if vaultFields["scope"] == nil {
+                noScopeHint = " The vault entry '\(params.name)' has no 'scope' field. " +
+                              "Add a 'scope' field with the vendor prefix, " +
+                              "e.g. \"brevo/\(params.name)\" or \"github/\(params.name)\", then retry."
+            } else {
+                noScopeHint = " This secret cannot be rotated automatically."
+            }
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.denied,
+                message: "secret.rotate: no driver registered for vendor '\(vendorName)' " +
+                         "(scope '\(entry.scope)').\(noScopeHint)"
+            ))
+        }
+
+        // Drive the rotation with a manual trigger.
+        let outcome = await driver.rotate(entry: entry, trigger: .manual(op: "secret.rotate"))
+        let rotationId = UUID().uuidString
+
+        // Exhaustive outcome mapping — no default arm so a new case is a compile error.
+        switch outcome {
+        case .rotated:
+            do {
+                let rotated = try await daemon.engine.applyRotation(entry: entry)
+                // oldJtiSuffix: last 4 hex chars of the rotation-event UUID (display only).
+                // The engine has no per-entry JTI; this gives the CLI a unique display token.
+                let suffix = String(rotationId.replacingOccurrences(of: "-", with: "").prefix(4))
+                let invalidAtFormatter = ISO8601DateFormatter()
+                invalidAtFormatter.formatOptions = [.withInternetDateTime]
+
+                // Attempt explicit invalidation of the previous credential.
+                // A failure here is not a rotation failure — the new credential is already
+                // live and written to the vault. Surface a warning so the operator can
+                // manually clean up the stale credential via the vendor console.
+                var invalidationWarning: String? = nil
+                do {
+                    try await driver.invalidate(previous: entry)
+                } catch {
+                    invalidationWarning = "rotated at vendor but old credential NOT invalidated — " +
+                                          "old credential may still be live. Revoke it manually via " +
+                                          "the vendor console. Invalidation error: \(error)"
+                    _ = try? await daemon.audit.append(.init(
+                        ts: Date(),
+                        tokenJti: "wire-invalidate-\(rotationId.prefix(8))",
+                        callerUid: Int32(bitPattern: peerUid),
+                        callerTransport: .unix,
+                        secretName: String(params.name.prefix(AuditWriter.maxSecretNameLength)),
+                        op: .rotate,
+                        allow: .deny,
+                        reason: .rotationFailed,
+                        llmTouched: false
+                    ))
+                }
+
+                // RotationResult lives in ShiSecretsClient (not imported here by design).
+                // Build the wire payload as a JSONValue object that ProductionBrokerClient
+                // will decode with decodeResult(_:as:RotationResult.self) on its side.
+                // Field names must match RotationResult's CodingKeys exactly.
+                var resultObj: [String: JSONValue] = [
+                    "secretName":   .string(rotated.name),
+                    "oldJtiSuffix": .string(suffix),
+                    "invalidAt":    .string(invalidAtFormatter.string(from: rotated.lastRotated)),
+                ]
+                if let warning = invalidationWarning {
+                    resultObj["invalidationWarning"] = .string(warning)
+                }
+                let resultJSON: JSONValue = .object(resultObj)
+
+                // CRIT-2: audit every mutation.
+                _ = try? await daemon.audit.append(.init(
+                    ts: Date(),
+                    tokenJti: "wire-rotate-\(rotationId.prefix(8))",
+                    callerUid: Int32(bitPattern: peerUid),
+                    callerTransport: .unix,
+                    secretName: String(params.name.prefix(AuditWriter.maxSecretNameLength)),
+                    op: .rotate,
+                    allow: .allow,
+                    reason: nil,
+                    llmTouched: false
+                ))
+                return WireResponse(id: request.id, result: resultJSON)
+            } catch {
+                return WireResponse(id: request.id, error: WireError(
+                    code: WireErrorCode.internalError,
+                    message: "secret.rotate: applyRotation failed: \(error)"
+                ))
+            }
+
+        case .failed(let reason):
+            _ = try? await daemon.engine.handleFailure(entry: entry, reason: reason)
+            _ = try? await daemon.audit.append(.init(
+                ts: Date(),
+                tokenJti: "wire-rotate-\(rotationId.prefix(8))",
+                callerUid: Int32(bitPattern: peerUid),
+                callerTransport: .unix,
+                secretName: String(params.name.prefix(AuditWriter.maxSecretNameLength)),
+                op: .rotate,
+                allow: .deny,
+                reason: .rotationFailed,
+                llmTouched: false
+            ))
+            return WireResponse(id: request.id, error: WireError(
+                code: WireErrorCode.internalError,
+                message: "secret.rotate: driver '\(vendorName)' reported failure: \(reason)"
             ))
         }
     }

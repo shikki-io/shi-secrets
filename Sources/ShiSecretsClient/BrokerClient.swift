@@ -53,10 +53,20 @@ public struct RotationResult: Sendable, Equatable, Codable {
     public let secretName: String
     public let oldJtiSuffix: String   // last 4 chars of prior jti (display only)
     public let invalidAt: Date
-    public init(secretName: String, oldJtiSuffix: String, invalidAt: Date) {
+    /// Non-nil when the rotation succeeded but the previous credential could
+    /// not be explicitly invalidated (e.g. revoke API call failed). The old
+    /// credential may still be live — revoke manually using the vendor console.
+    public let invalidationWarning: String?
+    public init(
+        secretName: String,
+        oldJtiSuffix: String,
+        invalidAt: Date,
+        invalidationWarning: String? = nil
+    ) {
         self.secretName = secretName
         self.oldJtiSuffix = oldJtiSuffix
         self.invalidAt = invalidAt
+        self.invalidationWarning = invalidationWarning
     }
 }
 
