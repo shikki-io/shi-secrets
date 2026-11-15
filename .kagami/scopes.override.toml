@@ -81,3 +81,27 @@ test_file_patterns = ["**/BrokerProcessE2ETests.swift", "**/FakeVaultwardenServe
 type_patterns = ["ShiSecretsBrokerProcessE2E"]
 expected_test_min = 5
 timeout_seconds = 290
+
+[[scopes]]
+# ShiSecretsPeerCodeIdentity — W3 of spec c4e9a1f7 (BR-H-04), test T-07.
+# Sources: Sources/ShiSecretsBrokerd/PeerCodeIdentity.swift
+#          Sources/ShiSecretsBrokerd/UnixSocketServer.swift (accept-loop seam)
+#          Sources/ShiSecretsBrokerd/Config/BrokerdSettings.swift ([peer] section)
+# Tests:   Tests/ShiSecretsBrokerdTests/PeerCodeIdentityTests.swift
+#
+# A scope of its own, rather than relying on ShiSecretsBrokerdTests: that
+# scope's type_patterns list starts with the TEST TARGET NAME
+# ("ShiSecretsBrokerdTests"), which makes the rest of the list decorative and
+# selects the whole target — so it cannot report a floor for this wave alone.
+# Four of the eighteen tests are .enabled(if:) on macOS, so a Linux run
+# reports them SKIPPED rather than passing.
+#
+# Run: kagami test --scope ShiSecretsPeerCodeIdentity --strict
+name = "ShiSecretsPeerCodeIdentity"
+language = "swift"
+package_path = "."
+test_target_name = "ShiSecretsBrokerdTests"
+type_patterns = ["PeerCodePolicyResolutionTests", "PeerCodeRequirementTests", "PeerCodeAuthorizerTests", "BrokerdSettingsPeerTests", "UnixSocketConfigPeerPolicyTests"]
+test_file_patterns = ["**/Tests/ShiSecretsBrokerdTests/PeerCodeIdentityTests.swift"]
+timeout_seconds = 300
+description = "enterprise-safety-hardening c4e9a1f7 W3 (BR-H-04): the broker binds its peer check to the caller's team id — a mismatching team is refused, observe mode admits the same peer. Run: kagami test --scope ShiSecretsPeerCodeIdentity --strict"

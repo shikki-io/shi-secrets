@@ -38,11 +38,35 @@ public struct BrokerdSettings: Sendable, Equatable {
     /// Empty list means deny-all reads. `["**"]` is the dev-friendly default.
     public let scopeAllowlist: [String]
 
+    /// Apple Developer Team ID every CALLER must be signed by — `[peer]
+    /// require_team_id` (W3 of spec c4e9a1f7, BR-H-04).
+    ///
+    /// `nil` means the code-identity check is OFF and the daemon says so at
+    /// boot. It is deliberately not defaulted to the fleet team id: an
+    /// operator's locally built `shi` is ad-hoc signed, so a default-armed
+    /// check would refuse every dev worktree's `shi secret get` the moment
+    /// this version is installed. See PeerCodeIdentity.swift.
+    ///
+    /// Unlike `scopeAllowlist`, an unreadable config does NOT fall back to
+    /// permissive here — `loadOrDefault` returns an empty allowlist on
+    /// malformed TOML and the daemon refuses to start, so the peer value is
+    /// never reached in that path.
+    public let requirePeerTeamID: String?
+
     // MARK: - Init
 
-    public init(scopeAllowlist: [String], vaultURL: URL?) {
+    public init(scopeAllowlist: [String], vaultURL: URL?, requirePeerTeamID: String? = nil) {
         self.scopeAllowlist = scopeAllowlist
         self.vaultURL = vaultURL
+        self.requirePeerTeamID = requirePeerTeamID
+    }
+
+    /// The effective peer policy for this configuration, including the
+    /// one-launch `SHI_SECRETS_PEER_CHECK=observe` downgrade.
+    public func peerCodePolicy(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> PeerCodePolicy {
+        PeerCodePolicy.resolve(requireTeamID: requirePeerTeamID, environment: environment)
     }
 
     // MARK: - Convenience
@@ -123,6 +147,18 @@ public struct BrokerdSettings: Sendable, Equatable {
             # "**" matches anything — DEV ONLY. Never use in production.
             # Production examples: "shi/**", "ci/**", "verify-*"
             allowlist = ["**"]
+
+            [peer]
+            # Apple Developer Team ID every CALLER must be signed by
+            # (spec c4e9a1f7 BR-H-04). Commented out on purpose: a locally
+            # built `shi` is ad-hoc signed and would be REFUSED, so arming
+            # this on a dev machine breaks `shi secret get`. Uncomment on a
+            # machine that runs installed, signed binaries only.
+            #
+            # require_team_id = "SH7MZH647S"
+            #
+            # To see what the check WOULD do without refusing anybody, launch
+            # the daemon once with SHI_SECRETS_PEER_CHECK=observe.
             """
         try defaultContent.write(to: path, atomically: true, encoding: .utf8)
     }
@@ -144,6 +180,7 @@ public struct BrokerdSettings: Sendable, Equatable {
         var currentSection: String? = nil
         var scopeAllowlist: [String] = []
         var vaultURL: URL? = nil
+        var requirePeerTeamID: String? = nil
 
         let lines = text.components(separatedBy: "\n")
         for rawLine in lines {
@@ -170,6 +207,12 @@ public struct BrokerdSettings: Sendable, Equatable {
 
             if currentSection == "scope" && key == "allowlist" {
                 scopeAllowlist = try parseStringArray(rawValue)
+            } else if currentSection == "peer" && key == "require_team_id" {
+                let stripped = stripQuotes(rawValue)
+                // An empty value is the same statement as an absent key, and
+                // `PeerCodePolicy.resolve` already treats "" as off — kept nil
+                // here so the two spellings cannot diverge later.
+                requirePeerTeamID = stripped.isEmpty ? nil : stripped
             } else if currentSection == nil && key == "vault_url" {
                 let stripped = stripQuotes(rawValue)
                 if !stripped.isEmpty, let url = URL(string: stripped) {
@@ -178,7 +221,10 @@ public struct BrokerdSettings: Sendable, Equatable {
             }
         }
 
-        return BrokerdSettings(scopeAllowlist: scopeAllowlist, vaultURL: vaultURL)
+        return BrokerdSettings(
+            scopeAllowlist: scopeAllowlist,
+            vaultURL: vaultURL,
+            requirePeerTeamID: requirePeerTeamID)
     }
 
     /// Parse a single-line TOML string array: `["foo", "bar", "baz"]`.

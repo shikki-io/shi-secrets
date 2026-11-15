@@ -274,10 +274,25 @@ struct BrokerMain {
         let socketPath = resolvedSocketPath
         // HIGH-6: suppress SIGPIPE — writes to closed sockets return EPIPE instead of killing the process.
         signal(SIGPIPE, SIG_IGN)
+        // BR-H-04 (spec c4e9a1f7 W3): the caller's CODE identity, on top of
+        // its uid. Off unless `[peer] require_team_id` is configured, and the
+        // boot line says which it is — an operator must never have to guess
+        // whether a security check is armed. See PeerCodeIdentity.swift for
+        // why it is not armed by default.
+        let peerPolicy = brokerdSettings.peerCodePolicy()
+        switch peerPolicy {
+        case .off:
+            log("shikki-secrets-brokerd: peer code-identity check OFF — any same-user process may connect. Arm it with [peer] require_team_id = \"SH7MZH647S\" in ~/.shikki/settings/secrets-brokerd.toml (a locally built `shi` is ad-hoc signed and WILL be refused once armed).")
+        case .observe(let teamID):
+            log("shikki-secrets-brokerd: WARN peer code-identity check in OBSERVE mode for team \(teamID) — verdicts are logged, nobody is refused (SHI_SECRETS_PEER_CHECK=observe). Unset it to enforce.")
+        case .enforce(let teamID):
+            log("shikki-secrets-brokerd: peer code-identity check ENFORCED — callers must be signed by team \(teamID)")
+        }
         let socketConfig = UnixSocketConfig(
             socketPath: socketPath,
             expectedMode: 0o600,
-            expectedUid: UInt32(getuid())
+            expectedUid: UInt32(getuid()),
+            peerCodePolicy: peerPolicy
         )
         let socket = UnixSocketServer(config: socketConfig)
 
