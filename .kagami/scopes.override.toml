@@ -32,9 +32,18 @@ name = "ShiSecretsBrokerdTests"
 # tests). The floor is 201, NOT 239, and the gap is deliberate: three files
 # are wrapped in `#if os(macOS)` — VaultwardenClientTokenCacheTests (14),
 # VaultwardenTokenCacheW65Tests (6) and PeerCodeIdentityTests (18) — and on
-# Linux those 38 do not merely SKIP, they do not exist. CI runs in
-# shikki/kagami-runner, so a floor of 239 would fail every CI run. 201 is the
-# worst case (239 - 38) and is therefore a true minimum on either platform.
+# Linux those 38 do not merely SKIP, they do not exist. 201 is the worst case
+# (239 - 38) and is therefore a true minimum on any platform that can build
+# this package at all.
+#   CORRECTION, same day: the first version of this comment justified 201 with
+#   "CI runs in shikki/kagami-runner, so 239 would fail every CI run". That
+#   reasoning was built on a phantom. shikki/kagami-runner does not exist
+#   (Docker Hub returns 404; the Woodpecker daemon answers "pull access
+#   denied ... repository does not exist"), and this package declares
+#   platforms: [.macOS(.v14)] with FakeVaultwardenServer importing Security,
+#   so it cannot build on Linux regardless. 201 remains correct as a floor —
+#   a floor is a minimum — but the reason is the os-gating measured on macOS,
+#   not a Linux CI run that has never happened.
 # Its job here is to catch the scope resolving to NOTHING, which is the
 # failure this scope could not previously distinguish from success, having
 # had no floor at all. Raise it once a real Linux run measures the count.

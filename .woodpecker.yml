@@ -28,6 +28,32 @@
 #
 # Pinned by WoodpeckerScopeExistsTests, which fails if a --scope here names a
 # scope the kagami registry does not define.
+#
+# ─── STILL RED, AND NOT FOR EITHER REASON ABOVE ─────────────────────────────
+# Measured on pipeline 19 (commit eeecb84, the commit that fixed the scope
+# name). The workflow-level error, which the step log does not show:
+#
+#   Error response from daemon: pull access denied for shikki/kagami-runner,
+#   repository does not exist or may require 'docker login': denied
+#
+# THE IMAGE BELOW DOES NOT EXIST. Docker Hub answers 404 for
+# shikki/kagami-runner. That — not the scope name — is what produced the
+# empty log, the absent timestamps and the failure-with-exit-0 on every run:
+# the container never started, so nothing inside it was ever reached. The
+# scope name was independently wrong and had to be fixed, but it was never
+# the blocking cause, and this comment exists because the first diagnosis
+# said it was.
+#
+# It cannot be fixed by swapping in a Swift image either. This package
+# declares `platforms: [.macOS(.v14)]` and FakeVaultwardenServer imports
+# Security, so it does not build on Linux at all; shikki's own working
+# pipelines use `swift:6.3-jammy`, which is Linux. shi-secrets CI needs a
+# macOS runner, or a published macOS kagami-runner image. That is an
+# infrastructure decision, so the image reference is left as-is and
+# documented rather than swapped for one that fails differently.
+#
+# The same phantom image is referenced by shikki's .woodpecker/kagami-e2e.yml
+# (twice), so that pipeline has never executed a step either.
 
 when:
   event: [pull_request, push]
