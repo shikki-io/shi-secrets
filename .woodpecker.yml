@@ -2,16 +2,65 @@
 # Non-vault e2e scope: runs on every PR + push to main/develop.
 # Vault-live scope: operator-machine only via scripts/beta-vault-live.sh.
 # Part of Master Spec §1.4 — shi-secrets-hanko-beta cluster.
+#
+# ONE `when:` ONLY, and the scope name is a real scope (both fixed 2026-11-16).
+# What was here before, and what it did:
+#
+#   1. `--scope e2e-brokerd-no-vault` — NO SUCH SCOPE. The repo registers 10,
+#      and the two E2E ones are ShiSecretsBrokerProcessE2E and
+#      ShiSecretsE2ETests. Every pipeline targeting main therefore failed with
+#      an EMPTY LOG and no start/end timestamps: the step never executed
+#      anything. Pipelines 10, 13, 14, 15, 16, 17 and 18 all died this way,
+#      including 14, a plain push of the legal commit — so it was never any
+#      one PR's doing.
+#   2. A step-level `when:` NARROWER than the top-level one (it dropped
+#      "feat/*" and "fix/*"). A push to a feature branch therefore started a
+#      pipeline, skipped its only step, and reported GREEN having executed
+#      nothing. That is the 0|0|0|0 silent-success shape at pipeline level,
+#      and it is why (1) went unnoticed: the branches people actually push to
+#      were always "passing".
+#
+# The duplicate filter is gone rather than widened: the comment above states
+# the intent (main/develop), so the top-level `when:` now matches it and a
+# feature-branch push produces NO pipeline instead of a misleading green one.
+# A PR from a feature branch still runs, because a pull_request event carries
+# the BASE branch.
+#
+# Pinned by WoodpeckerScopeExistsTests, which fails if a --scope here names a
+# scope the kagami registry does not define.
+#
+# ─── STILL RED, AND NOT FOR EITHER REASON ABOVE ─────────────────────────────
+# Measured on pipeline 19 (commit eeecb84, the commit that fixed the scope
+# name). The workflow-level error, which the step log does not show:
+#
+#   Error response from daemon: pull access denied for shikki/kagami-runner,
+#   repository does not exist or may require 'docker login': denied
+#
+# THE IMAGE BELOW DOES NOT EXIST. Docker Hub answers 404 for
+# shikki/kagami-runner. That — not the scope name — is what produced the
+# empty log, the absent timestamps and the failure-with-exit-0 on every run:
+# the container never started, so nothing inside it was ever reached. The
+# scope name was independently wrong and had to be fixed, but it was never
+# the blocking cause, and this comment exists because the first diagnosis
+# said it was.
+#
+# It cannot be fixed by swapping in a Swift image either. This package
+# declares `platforms: [.macOS(.v14)]` and FakeVaultwardenServer imports
+# Security, so it does not build on Linux at all; shikki's own working
+# pipelines use `swift:6.3-jammy`, which is Linux. shi-secrets CI needs a
+# macOS runner, or a published macOS kagami-runner image. That is an
+# infrastructure decision, so the image reference is left as-is and
+# documented rather than swapped for one that fails differently.
+#
+# The same phantom image is referenced by shikki's .woodpecker/kagami-e2e.yml
+# (twice), so that pipeline has never executed a step either.
 
 when:
   event: [pull_request, push]
-  branch: [main, develop, "feat/*", "fix/*"]
+  branch: [main, develop]
 
 steps:
   - name: kagami-e2e-no-vault
     image: shikki/kagami-runner:latest
     commands:
-      - kagami test --strict --scope e2e-brokerd-no-vault
-    when:
-      event: [pull_request, push]
-      branch: [main, develop]
+      - kagami test --strict --scope ShiSecretsBrokerProcessE2E

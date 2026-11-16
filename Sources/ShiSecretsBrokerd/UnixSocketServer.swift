@@ -98,10 +98,23 @@ public struct UnixSocketConfig: Sendable, Equatable {
     public let expectedMode: UInt16
     public let expectedUid: UInt32
 
-    public init(socketPath: String, expectedMode: UInt16 = 0o600, expectedUid: UInt32) {
+    /// What the accept loop does with the caller's CODE identity, on top of
+    /// its uid (W3 of spec c4e9a1f7, BR-H-04). Defaults to ``PeerCodePolicy/off``
+    /// so an existing deployment behaves exactly as before until an operator
+    /// writes `[peer] require_team_id` — see PeerCodeIdentity.swift for why
+    /// arming it by default would brick every locally built `shi`.
+    public let peerCodePolicy: PeerCodePolicy
+
+    public init(
+        socketPath: String,
+        expectedMode: UInt16 = 0o600,
+        expectedUid: UInt32,
+        peerCodePolicy: PeerCodePolicy = .off
+    ) {
         self.socketPath = socketPath
         self.expectedMode = expectedMode
         self.expectedUid = expectedUid
+        self.peerCodePolicy = peerCodePolicy
     }
 }
 
@@ -439,6 +452,15 @@ public actor UnixSocketServer {
                 peerUid = cred.uid
             } else {
                 // If peerCredentials fails, reject the connection — no fallback.
+                close(clientFd)
+                continue
+            }
+            // BR-H-04: and WHO the caller is, not only which uid it runs as.
+            // The uid check above plus the 0600 socket already exclude another
+            // user; this excludes any same-user process that is not signed by
+            // our team. `.off` (the default) returns true without doing any
+            // work, so an unarmed deployment pays nothing.
+            if !PeerCodeAuthorizer(policy: config.peerCodePolicy).admits(fd: clientFd) {
                 close(clientFd)
                 continue
             }
