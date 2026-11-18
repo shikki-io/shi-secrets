@@ -154,6 +154,8 @@ public actor VaultwardenClient {
     /// Everything the server told us at token time, kept so `unlock` does not
     /// have to make a second round trip.
     private var accountProtectedKey: String?
+    /// The renewal currently in progress, if any — see `validToken()`.
+    private var inFlightRenewal: Task<String, Error>?
     private var accountKDF: VaultKDFParameters?
 
     /// How many fields came back unencrypted this session. Non-zero means the
@@ -388,6 +390,52 @@ public actor VaultwardenClient {
         await sessionCache.setToken(tokenResponse.access_token, expiresAt: expiresAt)
     }
 
+    // MARK: - validToken()
+
+    /// The access token every API call authenticates with — renewed on demand.
+    ///
+    /// The token is a short-lived OAuth bearer (Vaultwarden issues `expires_in`
+    /// seconds, 2 h by default) held only in memory. `SessionCache` is built
+    /// with `refreshAction: nil` (see init), so nothing renews it in the
+    /// background: a broker that was unlocked at 17:00 held an expired token
+    /// by 19:00 while `vault.status` — which reads the vault KEY, not the
+    /// token — still said "unlocked". Every call then threw `notAuthenticated`
+    /// until the operator unlocked again, which refreshed the token as a side
+    /// effect.
+    ///
+    /// The client_credentials grant needs no master password, so renewing here
+    /// is safe and silent. If the exchange itself fails (server down, API key
+    /// revoked) that error propagates — it is a different, truthful failure.
+    ///
+    /// Single-flight: callers that arrive while a renewal is running await the
+    /// SAME renewal and all receive its token (or its error). Without this the
+    /// actor re-enters at every `await` and a burst of N calls mints N tokens.
+    /// A FAILED renewal is cleared on completion, so the next call starts a
+    /// fresh one rather than re-awaiting a dead task.
+    private func validToken() async throws -> String {
+        if let token = await sessionCache.currentToken() { return token }
+        // Re-check AFTER the suspension above: another caller may have started
+        // a renewal while this one was suspended. There is no `await` between
+        // this check and the assignment below, so no second renewal can slip in.
+        if let running = inFlightRenewal { return try await running.value }
+
+        let renewal = Task<String, Error> { [self] in
+            // Clear on every exit path (success, throw) BEFORE any waiter
+            // resumes: this runs on the actor, so there is no gap in which a
+            // new caller could observe a finished task.
+            defer { inFlightRenewal = nil }
+            // The cache may have been filled (unlock, connect) while queued.
+            if let token = await sessionCache.currentToken() { return token }
+            try await refreshToken()
+            guard let token = await sessionCache.currentToken() else {
+                throw VaultwardenClientError.notAuthenticated
+            }
+            return token
+        }
+        inFlightRenewal = renewal
+        return try await renewal.value
+    }
+
     // MARK: - Vault unlock
 
     private func captureKeyMaterial(from response: TokenResponse) {
@@ -473,9 +521,7 @@ public actor VaultwardenClient {
     /// The plaintext is returned ONLY to the calling actor; it is never
     /// logged, written to disk, or passed as a subprocess argument.
     public func fetchSecret(id: String) async throws -> [String: String] {
-        guard let token = await sessionCache.currentToken() else {
-            throw VaultwardenClientError.notAuthenticated
-        }
+        let token = try await validToken()
 
         let cipherURL = baseURL.appendingPathComponent("api/ciphers/\(id)")
         var request = URLRequest(url: cipherURL)
@@ -561,9 +607,7 @@ public actor VaultwardenClient {
     /// `[error: cannot decrypt]` on the web, an empty vault in the app.
     @discardableResult
     public func createCipher(name: String, value: String) async throws -> String {
-        guard let token = await sessionCache.currentToken() else {
-            throw VaultwardenClientError.notAuthenticated
-        }
+        let token = try await validToken()
         let keys = try await vaultKey.require()
         let encName  = try BitwardenCrypto.encrypt(name,  using: keys)
         let encValue = try BitwardenCrypto.encrypt(value, using: keys)
@@ -596,9 +640,7 @@ public actor VaultwardenClient {
 
     /// Delete a vault cipher by its UUID.
     public func deleteCipher(id: String) async throws {
-        guard let token = await sessionCache.currentToken() else {
-            throw VaultwardenClientError.notAuthenticated
-        }
+        let token = try await validToken()
 
         let url = baseURL.appendingPathComponent("api/ciphers/\(id)")
         var request = URLRequest(url: url)
@@ -619,9 +661,7 @@ public actor VaultwardenClient {
     /// List all vault items the service account has access to.
     /// Returns an array of `[id: String, name: String]` dictionaries.
     public func listSecrets() async throws -> [[String: String]] {
-        guard let token = await sessionCache.currentToken() else {
-            throw VaultwardenClientError.notAuthenticated
-        }
+        let token = try await validToken()
 
         let url = baseURL.appendingPathComponent("api/ciphers")
         var request = URLRequest(url: url)
@@ -670,9 +710,7 @@ public actor VaultwardenClient {
     /// EncString" needs no key. It also means this runs on a machine that
     /// cannot decrypt, which is where you most want to check.
     public func auditEncryption() async throws -> EncryptionAudit {
-        guard let token = await sessionCache.currentToken() else {
-            throw VaultwardenClientError.notAuthenticated
-        }
+        let token = try await validToken()
         var request = URLRequest(url: baseURL.appendingPathComponent("api/ciphers"))
         request.httpMethod = "GET"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -731,9 +769,7 @@ public actor VaultwardenClient {
     /// source. The report says so at the end for exactly this reason.
     public func reEncryptLegacyPlaintext(dryRun: Bool = true) async throws -> ReEncryptionReport {
         let keys = try await vaultKey.require()
-        guard let token = await sessionCache.currentToken() else {
-            throw VaultwardenClientError.notAuthenticated
-        }
+        let token = try await validToken()
 
         var report = ReEncryptionReport()
         report.dryRun = dryRun

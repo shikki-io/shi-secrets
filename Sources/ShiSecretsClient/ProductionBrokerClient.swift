@@ -156,6 +156,9 @@ public actor ProductionBrokerClient: BrokerClient {
             if err.code == WireErrorCode.denied {
                 throw BrokerClientError.denied(reason: err.message)
             }
+            if let auth = VaultAuthRequired(wireError: err) {
+                throw BrokerClientError.vaultAuthRequired(auth)
+            }
             throw BrokerClientError.brokerError(code: err.code, message: err.message)
         }
         guard let result = resp.result else {

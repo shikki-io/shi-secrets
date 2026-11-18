@@ -108,4 +108,37 @@ public enum BrokerClientError: Swift.Error, Sendable, Equatable {
     case denied(reason: String)
     /// Connection closed before a full response arrived.
     case connectionClosed
+    /// The vault is logged out or locked: an expected state with a named
+    /// reason and the command that fixes it (never an internal error).
+    case vaultAuthRequired(VaultAuthRequired)
+}
+
+extension BrokerClientError {
+    /// The expected vault state behind this error, if it is one.
+    public var vaultAuthRequired: VaultAuthRequired? {
+        if case let .vaultAuthRequired(a) = self { return a }
+        return nil
+    }
+}
+
+/// CLI rendering for an expected vault state, shared by every `shi secrets`
+/// verb so they all say the same thing. Human text goes to stderr; with
+/// `json` the same reason and remedy go to stdout as one JSON object.
+/// Returns the process exit code (3 locked, 4 not logged in), or nil when
+/// the error is not a vault-auth state and the caller keeps its own handling.
+public func reportVaultAuthRequired(_ error: Swift.Error, json: Bool) -> Int32? {
+    let auth: VaultAuthRequired
+    if let e = error as? BrokerClientError, let a = e.vaultAuthRequired {
+        auth = a
+    } else if let a = error as? VaultAuthRequired {
+        auth = a
+    } else {
+        return nil
+    }
+    if json {
+        print(auth.jsonString)
+    } else {
+        FileHandle.standardError.write(Data(("ERROR: " + auth.message + "\n").utf8))
+    }
+    return auth.exitCode
 }

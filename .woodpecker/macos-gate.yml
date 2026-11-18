@@ -1,0 +1,115 @@
+# .woodpecker/macos-gate.yml — shi-secrets' quality gate: kagami on every runnable scope.
+#
+# WHY THIS REPLACED THE OLD `.woodpecker.yml`. That file declared a single step,
+# `kagami test --strict --scope e2e-brokerd-no-vault`, on `image: shikki/kagami-runner:latest`,
+# with no platform label. It never gated anything, for five independent reasons — each one
+# enough on its own:
+#
+#   1. FALSE GREEN. The step carried `when.branch: [main, develop]` inside a workflow whose
+#      `when.branch` also admitted `feat/*` and `fix/*`. A push to a feature branch therefore
+#      produced a pipeline whose ONLY step was filtered out: it cloned and reported SUCCESS.
+#      (Measured: ci.obyw.one pipeline 3, push to fix/auth-error-remedy — `success`, one step,
+#      `clone`.)
+#   2. WRONG AGENT. With no `labels:`, any connected agent was eligible. The pull_request run
+#      landed on the Mac agent, which uses the LOCAL backend, where `image:` names an
+#      interpreter and not a container. It failed with
+#      `exec: "shikki/kagami-runner:latest": stat ...: no such file or directory`.
+#      (Measured: pipeline 4.)
+#   3. PHANTOM IMAGE. No `shikki/kagami-runner` image is published anywhere.
+#   4. PHANTOM SCOPE. `e2e-brokerd-no-vault` exists in neither `.kagami/scopes.toml` nor
+#      `.kagami/scopes.override.toml`. A scope that selects zero tests is BUILD_FAILED, so even
+#      a correct agent with a correct image could not have passed.
+#   5. WRONG PLATFORM ENTIRELY. `Package.swift` declares `platforms: [.macOS(.v14)]`, and the
+#      sources import Security, LocalAuthentication and Darwin (Keychain, proof-of-presence,
+#      peer credentials, unix sockets). This package cannot build in a Linux container at all,
+#      so no Linux gate was ever going to work.
+#
+# WHERE IT RUNS. On the maintainer's own Mac, through a Woodpecker agent on the `local` backend:
+# the steps run DIRECTLY on that machine, with no container. That is why the triggers are narrow,
+# matching the fleet convention (see CoreKit's .woodpecker/macos-gate.yml):
+#   * never on `pull_request` — code from a pull request must never execute on the Mac;
+#   * `push` and `manual` only, and only on branches that mean "this is what we ship".
+#
+# THE LOCAL BACKEND. `image: bash` is not a container image here: it names the interpreter that
+# runs the step's commands. Paths are computed at run time with `$$(pwd)`, because
+# `${CI_WORKSPACE}` is EMPTY when Woodpecker parses this file and `$$` keeps Woodpecker from
+# substituting the shell variable.
+#
+# FAIL CLOSED. Each step runs with `set -e`. kagami's exit code IS the verdict (0 green, 1 red,
+# 2 could not run) and is never piped into a filter — a grep on kagami's stdout can report a
+# false green. `--scope` is single-valued and the LAST one wins, so there is exactly one
+# invocation per scope and never a list.
+
+when:
+  - event: [push, manual]
+    branch:
+      - "release/*"
+      - "beta/*"
+      # Commented out while a single maintainer runs the whole flow by hand, matching the rest
+      # of the fleet. Uncomment when more than one person pushes: from then on a green gate on
+      # these branches is the surface offered to final customers.
+      # - develop
+      # - main
+      # - master
+
+labels:
+  platform: darwin/arm64
+
+steps:
+  # Refuses to run on any event the `when:` above was not meant to allow, so a loosened trigger
+  # cannot silently widen what executes un-containerised on the Mac.
+  guard-event:
+    image: bash
+    commands:
+      - |
+        case "$${CI_PIPELINE_EVENT}" in
+          push|manual) echo "event $${CI_PIPELINE_EVENT}: allowed" ;;
+          *) echo "refusing to run on event $${CI_PIPELINE_EVENT} — this gate is push/manual only"; exit 1 ;;
+        esac
+      - swift --version
+      - 'echo "workspace: $$(pwd)"'
+
+  # Build the test targets before measuring anything: a scope that cannot compile must fail here
+  # as a build failure, not later as a confusing zero-test verdict.
+  build-tests:
+    image: bash
+    commands:
+      - swift build --build-tests
+
+  # Every scope the repository declares, discovered from the manifest. No list of scope names
+  # lives in this file, so a scope added to `.kagami/scopes.override.toml` is gated the moment it
+  # exists and this file cannot drift out of sync with it (the old hand-written list of five had
+  # already missed two declared scopes). `kagami test --all --strict` is the end state; it is not
+  # usable yet because it cannot exclude a scope and two declared ones cannot be gated today.
+  #
+  # `--scope` is single-valued (the last one wins), so this is one invocation per scope, and
+  # kagami's exit code is the verdict (0 green, 1 red, 2 could not run), never piped into a
+  # filter. Only the scope LISTING is read. Every failure is collected so one red scope does not
+  # hide the others, and the step fails closed if any scope failed or if nothing was discovered.
+  #
+  # NOT_GATED_YET is the single place a scope is excluded, by name, with its measured reason.
+  # A gate that excludes a red suite silently is worse than one that names it. Delete an entry
+  # the day its scope is green; when the list is empty this step becomes `kagami test --all --strict`.
+  #   ShiSecretsIntegrationTests   hangs at 0 % CPU on main; 25/26 red with no evidence recorded
+  #                                on this branch (shi pre-pr, 2026-11-09)
+  #   AdminKeyCeremonyTests        exit 2, could not run (measured 2026-11-09)
+  # ShiSecretsE2ETests (36/36) and ShiSecretsBrokerProcessE2E (7/7) were excluded here at first
+  # as red; shi pre-pr measured both green twice on this branch, so they are gated.
+  # Both exclusions are tracked in @db.
+  kagami-scopes:
+    image: bash
+    commands:
+      - |
+        NOT_GATED_YET=" ShiSecretsIntegrationTests AdminKeyCeremonyTests "
+        LISTING="$$(kagami test --scopes)"
+        SCOPES="$$(printf '%s\n' "$$LISTING" | sed -n 's/^  \([A-Za-z0-9_.-][A-Za-z0-9_.-]*\)$/\1/p')"
+        [ -n "$$SCOPES" ] || { echo "no scope discovered from .kagami: refusing to pass on nothing"; exit 1; }
+        FAILED=""
+        for SCOPE in $$SCOPES; do
+          case "$$NOT_GATED_YET" in
+            *" $$SCOPE "*) echo "skip $$SCOPE (NOT_GATED_YET)"; continue ;;
+          esac
+          echo "== kagami test --scope $$SCOPE --strict"
+          kagami test --scope "$$SCOPE" --strict || FAILED="$$FAILED $$SCOPE"
+        done
+        [ -z "$$FAILED" ] || { echo "RED:$$FAILED"; exit 1; }

@@ -72,6 +72,9 @@ extension BrokerResponse {
             return WireResponse(id: id, result: .object(payload))
 
         case .deny(let reason):
+            if let auth = VaultAuthRequired(denyReason: reason) {
+                return WireResponse(id: id, error: auth.wireError())
+            }
             let code = wireCode(for: reason)
             let dataPayload: JSONValue = .object([
                 "reason": .string(reason.rawValue),

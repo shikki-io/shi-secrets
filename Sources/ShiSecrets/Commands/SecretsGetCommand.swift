@@ -8,6 +8,7 @@
 // W3+W4 of features/shi-secrets-uri-scheme-and-plugin-extraction-2026-05-31.md.
 
 import Foundation
+import ShiSecretsClient
 import ShiSecretsKit
 
 /// `shi secrets get <uri> [--ephemeral] [--value] [--json]`
@@ -52,6 +53,7 @@ public struct SecretsGetCommand {
                 }
                 return 0
             } catch {
+                if let code = reportVaultAuthRequired(error, json: json) { return code }
                 fputs("ERROR: \(error.localizedDescription)\n", stderr)
                 return 1
             }
@@ -66,6 +68,7 @@ public struct SecretsGetCommand {
                 }
                 return 0
             } catch {
+                if let code = reportVaultAuthRequired(error, json: json) { return code }
                 fputs("ERROR: \(error.localizedDescription)\n", stderr)
                 return 1
             }
